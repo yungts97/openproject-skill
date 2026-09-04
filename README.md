@@ -9,7 +9,7 @@ The CLI supports Linux, macOS, and Windows on x86-64 and ARM64. It provides huma
 Paste this into Claude Code, OpenCode, Pi, Codex, or another agent that supports Agent Skills:
 
 ```text
-Install the OpenProject Agent Skill and CLI by following https://github.com/yungts97/openproject-skill/blob/main/INSTALL-WITH-AN-AGENT.md
+Install the OpenProject Agent Skill and CLI by following https://github.com/yungts97/openproject-skill/blob/main/INSTALL-WITH-AN-AGENT.md. Use its raw platform installer commands: they install the single `SKILL.md` file into the agent's skill directory and install the CLI.
 ```
 
 ## Manual installation
