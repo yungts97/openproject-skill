@@ -30,7 +30,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
 
-The default destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows.
+The default destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. Set `OPENPROJECT_INSTALL_DIR` to choose another location. The installers report each download, verification, and installation step, then show the exact command to verify the executable.
 
 Ensure the destination directory is on `PATH`, then verify the installation:
 
@@ -44,6 +44,25 @@ To build from source instead, install a stable Rust toolchain and run:
 ```sh
 cargo install --path .
 ```
+
+## Upgrading
+
+Upgrade to the latest GitHub release from the command line:
+
+```sh
+openproject upgrade
+```
+
+Pass a version without the leading `v` to install a specific release, or use `--dry-run` to inspect the source and destination without downloading anything:
+
+```sh
+openproject upgrade 0.2.0
+openproject upgrade --dry-run --json
+```
+
+Rerunning the platform installation command also upgrades an existing executable in the destination directory. The installer verifies the downloaded archive, safely replaces the executable, and reports `Upgraded` instead of `Installed` when it finds an existing installation.
+
+On Windows, `openproject upgrade` schedules the replacement immediately after the running process exits. The command targets the directory containing the executable, so it also works with a custom installation directory.
 
 ## Uninstallation
 
@@ -160,6 +179,7 @@ Global options may be supplied before or after a subcommand.
 | `comment TASK_ID --message TEXT` | Add an activity comment |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
+| `upgrade [VERSION]` | Upgrade to the latest release, or to a specific version without the leading `v` |
 | `uninstall` | Remove the running executable while preserving configuration and Agent Skill files |
 
 Run `openproject COMMAND --help` for the full option list.
@@ -178,6 +198,7 @@ openproject update 123 --status "In progress" --percent 40 --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
 openproject commit-link HEAD --format url
+openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json
 ```
 
@@ -189,7 +210,7 @@ The CLI never opens an interactive prompt, making it suitable for coding agents 
 - Successful commands exit with code `0`. Runtime failures exit with code `1`; argument errors use Clap's non-zero exit behavior.
 - With `--json`, runtime failures are written to stderr as `{"error":{"message":"..."}}`.
 - Use `--dry-run --json` to inspect write requests before submitting them.
-- `--version`, `--help`, `commit-link`, and `uninstall` do not require OpenProject credentials.
+- `--version`, `--help`, `commit-link`, `upgrade`, and `uninstall` do not require OpenProject credentials.
 - Treat `create`, `update`, `comment`, and `log-time` as external writes and run them only after the user authorizes the specific action.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.
 
@@ -203,7 +224,7 @@ export OPENPROJECT_GITLAB_HOST="gitlab.example.com" # optional
 ./scripts/install.sh 0.1.0
 ```
 
-The equivalent environment variables work with `install.ps1`. `OPENPROJECT_RELEASE_REPOSITORY` overrides the default public GitHub repository for either installer.
+The equivalent environment variables work with `install.ps1`. `OPENPROJECT_RELEASE_REPOSITORY` overrides the default public GitHub repository for either installer and for `openproject upgrade`. A GitLab-backed upgrade requires an explicit release version because `glab` does not resolve `latest` in this workflow.
 
 ## Development and releases
 

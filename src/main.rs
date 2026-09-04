@@ -16,6 +16,7 @@ use std::process::{Command, ExitCode};
 use url::Url;
 
 const API_ACCEPT: &str = "application/hal+json, application/json";
+const DEFAULT_RELEASE_REPOSITORY: &str = "yungts97/openproject-skill";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -69,6 +70,8 @@ enum Commands {
     LogTime(LogTimeArgs),
     /// Build a safe clickable link for a commit in the current Git repository.
     CommitLink(CommitLinkArgs),
+    /// Upgrade this executable from the configured GitHub release repository.
+    Upgrade(UpgradeArgs),
     /// Remove this OpenProject executable. Configuration and Agent Skill files are preserved.
     Uninstall,
 }
@@ -94,6 +97,13 @@ struct TasksArgs {
     assignee: Option<String>,
     #[arg(long)]
     query: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct UpgradeArgs {
+    /// Release version to install, or "latest".
+    #[arg(default_value = "latest")]
+    version: String,
 }
 
 #[derive(Args, Debug)]
@@ -658,6 +668,182 @@ fn remove_current_executable(path: &Path) -> Result<&'static str> {
     Ok("scheduled")
 }
 
+fn installer_url() -> String {
+    let repository = env::var("OPENPROJECT_RELEASE_REPOSITORY")
+        .unwrap_or_else(|_| DEFAULT_RELEASE_REPOSITORY.to_string());
+    let installer = if cfg!(windows) {
+        "install.ps1"
+    } else {
+        "install.sh"
+    };
+    format!(
+        "https://raw.githubusercontent.com/{}/main/scripts/{installer}",
+        repository.trim_matches('/')
+    )
+}
+
+fn download_installer(url: &str, destination: &Path) -> Result<()> {
+    let client = HttpClient::builder()
+        .user_agent(format!("openproject/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("cannot create installer download client")?;
+    let response = client
+        .get(url)
+        .send()
+        .with_context(|| format!("cannot download installer from {url}"))?
+        .error_for_status()
+        .with_context(|| format!("installer download failed for {url}"))?;
+    fs::write(destination, response.bytes()?)
+        .with_context(|| format!("cannot write installer {}", destination.display()))
+}
+
+#[cfg(not(windows))]
+fn run_upgrade_installer(
+    cli: &Cli,
+    installer: &Path,
+    version: &str,
+    destination: &Path,
+) -> Result<()> {
+    let mut command = Command::new("sh");
+    command
+        .arg(installer)
+        .arg(version)
+        .env("OPENPROJECT_INSTALL_DIR", destination);
+
+    if cli.json {
+        let output = command.output().context("cannot start upgrade installer")?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!("upgrade installer failed: {message}");
+        }
+        emit(
+            json!({
+                "operation":"upgrade",
+                "path":destination.join("openproject"),
+                "status":"updated",
+                "version":version
+            }),
+            true,
+        );
+    } else {
+        let status = command.status().context("cannot start upgrade installer")?;
+        if !status.success() {
+            bail!("upgrade installer exited with {status}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn schedule_upgrade_installer(
+    cli: &Cli,
+    installer: &Path,
+    version: &str,
+    destination: &Path,
+) -> Result<()> {
+    let helper = env::temp_dir().join(format!(
+        "openproject-upgrade-helper-{}.ps1",
+        std::process::id()
+    ));
+    fs::write(
+        &helper,
+        r#"param(
+  [int]$OpenProjectProcessId,
+  [string]$InstallerPath,
+  [string]$Version,
+  [string]$Destination
+)
+$ErrorActionPreference = "Stop"
+try {
+  Wait-Process -Id $OpenProjectProcessId -ErrorAction SilentlyContinue
+  & $InstallerPath -Version $Version -Destination $Destination
+} finally {
+  Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+"#,
+    )
+    .with_context(|| format!("cannot create upgrade helper {}", helper.display()))?;
+
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&helper)
+        .arg(std::process::id().to_string())
+        .arg(installer)
+        .arg(version)
+        .arg(destination);
+    if cli.json {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    if let Err(error) = command.spawn() {
+        let _ = fs::remove_file(&helper);
+        return Err(error).context("cannot start Windows upgrade helper");
+    }
+
+    let path = destination.join("openproject.exe");
+    if cli.json {
+        emit(
+            json!({"operation":"upgrade","path":path,"status":"scheduled","version":version}),
+            true,
+        );
+    } else {
+        println!(
+            "Scheduled upgrade of {} after this process exits",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn upgrade(cli: &Cli, args: &UpgradeArgs) -> Result<()> {
+    let executable = env::current_exe().context("cannot locate the current executable")?;
+    let destination = executable
+        .parent()
+        .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
+    let url = installer_url();
+    let path = executable.display().to_string();
+    if cli.dry_run {
+        if cli.json {
+            emit(
+                json!({
+                    "dryRun":true,
+                    "installer":url,
+                    "operation":"upgrade",
+                    "path":path,
+                    "version":args.version
+                }),
+                true,
+            );
+        } else {
+            println!("Would upgrade {path} to {} using {url}", args.version);
+        }
+        return Ok(());
+    }
+
+    let extension = if cfg!(windows) { "ps1" } else { "sh" };
+    let installer = env::temp_dir().join(format!(
+        "openproject-upgrade-{}.{}",
+        std::process::id(),
+        extension
+    ));
+    download_installer(&url, &installer)?;
+
+    #[cfg(windows)]
+    {
+        schedule_upgrade_installer(cli, &installer, &args.version, destination)
+    }
+    #[cfg(not(windows))]
+    {
+        let result = run_upgrade_installer(cli, &installer, &args.version, destination);
+        let _ = fs::remove_file(&installer);
+        result
+    }
+}
+
 fn uninstall(cli: &Cli) -> Result<()> {
     let executable = env::current_exe().context("cannot locate the current executable")?;
     let path = executable.display().to_string();
@@ -685,6 +871,9 @@ fn uninstall(cli: &Cli) -> Result<()> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    if let Commands::Upgrade(args) = &cli.command {
+        return upgrade(cli, args);
+    }
     if let Commands::Uninstall = &cli.command {
         return uninstall(cli);
     }
@@ -858,7 +1047,7 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.json,
             );
         }
-        Commands::CommitLink(_) | Commands::Uninstall => unreachable!(),
+        Commands::CommitLink(_) | Commands::Upgrade(_) | Commands::Uninstall => unreachable!(),
     };
     Ok(())
 }
@@ -910,6 +1099,13 @@ mod tests {
     #[test]
     fn uninstall_dry_run_does_not_require_openproject_credentials() {
         let cli = Cli::try_parse_from(["openproject", "uninstall", "--dry-run", "--json"]).unwrap();
+        assert!(run(&cli).is_ok());
+    }
+
+    #[test]
+    fn upgrade_dry_run_does_not_require_openproject_credentials() {
+        let cli = Cli::try_parse_from(["openproject", "upgrade", "0.2.0", "--dry-run", "--json"])
+            .unwrap();
         assert!(run(&cli).is_ok());
     }
 
