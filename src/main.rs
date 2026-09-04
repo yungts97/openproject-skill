@@ -10,6 +10,8 @@ use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Stdio;
 use std::process::{Command, ExitCode};
 use url::Url;
 
@@ -31,7 +33,7 @@ struct Cli {
     /// Emit machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
-    /// Print write requests without submitting them.
+    /// Preview mutations without applying them.
     #[arg(long, global = true)]
     dry_run: bool,
     #[command(subcommand)]
@@ -67,6 +69,8 @@ enum Commands {
     LogTime(LogTimeArgs),
     /// Build a safe clickable link for a commit in the current Git repository.
     CommitLink(CommitLinkArgs),
+    /// Remove this OpenProject executable. Configuration and Agent Skill files are preserved.
+    Uninstall,
 }
 
 #[derive(Subcommand, Debug)]
@@ -624,7 +628,66 @@ fn commit_link(cwd: &Path, args: &CommitLinkArgs) -> Result<Value> {
     )
 }
 
+#[cfg(not(windows))]
+fn remove_current_executable(path: &Path) -> Result<&'static str> {
+    fs::remove_file(path)
+        .with_context(|| format!("cannot remove executable {}", path.display()))?;
+    Ok("removed")
+}
+
+#[cfg(windows)]
+fn remove_current_executable(path: &Path) -> Result<&'static str> {
+    let script = env::temp_dir().join(format!("openproject-uninstall-{}.cmd", std::process::id()));
+    fs::write(
+        &script,
+        "@echo off\r\nfor /L %%i in (1,1,30) do (\r\n  del /f /q \"%OPENPROJECT_UNINSTALL_TARGET%\" >nul 2>&1\r\n  if not exist \"%OPENPROJECT_UNINSTALL_TARGET%\" goto done\r\n  ping 127.0.0.1 -n 2 >nul\r\n)\r\n:done\r\ndel /f /q \"%~f0\"\r\n",
+    )
+    .with_context(|| format!("cannot create uninstall helper {}", script.display()))?;
+    let result = Command::new("cmd")
+        .arg("/C")
+        .arg(&script)
+        .env("OPENPROJECT_UNINSTALL_TARGET", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&script);
+        return Err(error).context("cannot start Windows uninstall helper");
+    }
+    Ok("scheduled")
+}
+
+fn uninstall(cli: &Cli) -> Result<()> {
+    let executable = env::current_exe().context("cannot locate the current executable")?;
+    let path = executable.display().to_string();
+    if cli.dry_run {
+        if cli.json {
+            emit(
+                json!({"dryRun":true,"operation":"uninstall","path":path}),
+                true,
+            );
+        } else {
+            println!("Would remove {path}");
+        }
+        return Ok(());
+    }
+
+    let status = remove_current_executable(&executable)?;
+    if cli.json {
+        emit(json!({"path":path,"status":status}), true);
+    } else if status == "scheduled" {
+        println!("Scheduled removal of {path} after this process exits");
+    } else {
+        println!("Removed {path}");
+    }
+    Ok(())
+}
+
 fn run(cli: &Cli) -> Result<()> {
+    if let Commands::Uninstall = &cli.command {
+        return uninstall(cli);
+    }
     if let Commands::CommitLink(args) = &cli.command {
         let result = commit_link(&cli.cwd, args)?;
         match args.format.as_str() {
@@ -795,7 +858,7 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.json,
             );
         }
-        Commands::CommitLink(_) => unreachable!(),
+        Commands::CommitLink(_) | Commands::Uninstall => unreachable!(),
     };
     Ok(())
 }
@@ -842,6 +905,12 @@ mod tests {
                 format!("openproject {}\n", env!("CARGO_PKG_VERSION"))
             );
         }
+    }
+
+    #[test]
+    fn uninstall_dry_run_does_not_require_openproject_credentials() {
+        let cli = Cli::try_parse_from(["openproject", "uninstall", "--dry-run", "--json"]).unwrap();
+        assert!(run(&cli).is_ok());
     }
 
     #[test]

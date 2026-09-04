@@ -45,6 +45,18 @@ To build from source instead, install a stable Rust toolchain and run:
 cargo install --path .
 ```
 
+## Uninstallation
+
+Remove the executable that is currently running:
+
+```sh
+openproject uninstall
+```
+
+Use `openproject uninstall --dry-run` to display the executable path without removing it. On Windows, removal is scheduled immediately after the command exits because a running executable cannot delete itself.
+
+This command preserves global and repository configuration as well as the separately installed Agent Skill. Remove the skill through the agent or skill manager that installed it.
+
 ## Authentication
 
 Create an API token in OpenProject under **My account → Access token**. The token is accepted only through `OPENPROJECT_TOKEN`; it is never accepted as a command-line argument or configuration-file value.
@@ -131,7 +143,7 @@ Global options may be supplied before or after a subcommand.
 | `--host <URL>` | Override the configured OpenProject base URL |
 | `--cwd <PATH>` | Choose the repository used for configuration and project discovery; defaults to `.` |
 | `--json` | Emit JSON results; runtime errors are emitted as JSON on stderr |
-| `--dry-run` | Print a mutation's method, path, and payload without submitting it |
+| `--dry-run` | Preview a mutation without applying it |
 | `-h`, `--help` | Show command help |
 
 ## Commands
@@ -148,6 +160,7 @@ Global options may be supplied before or after a subcommand.
 | `comment TASK_ID --message TEXT` | Add an activity comment |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
+| `uninstall` | Remove the running executable while preserving configuration and Agent Skill files |
 
 Run `openproject COMMAND --help` for the full option list.
 
@@ -165,6 +178,7 @@ openproject update 123 --status "In progress" --percent 40 --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
 openproject commit-link HEAD --format url
+openproject uninstall --dry-run --json
 ```
 
 ## Agent-friendly operation
@@ -175,7 +189,7 @@ The CLI never opens an interactive prompt, making it suitable for coding agents 
 - Successful commands exit with code `0`. Runtime failures exit with code `1`; argument errors use Clap's non-zero exit behavior.
 - With `--json`, runtime failures are written to stderr as `{"error":{"message":"..."}}`.
 - Use `--dry-run --json` to inspect write requests before submitting them.
-- `--version`, `--help`, and `commit-link` do not require OpenProject credentials.
+- `--version`, `--help`, `commit-link`, and `uninstall` do not require OpenProject credentials.
 - Treat `create`, `update`, `comment`, and `log-time` as external writes and run them only after the user authorizes the specific action.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.
 

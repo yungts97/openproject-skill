@@ -15,6 +15,8 @@ Check availability with `openproject --version`. If the executable is missing, e
 
 The public skill source is the repository root of `yungts97/openproject-skill`. The executable installation is separate because it is platform-specific. Users with a private GitLab mirror may set `OPENPROJECT_GITLAB_PROJECT`, optionally `OPENPROJECT_GITLAB_HOST`, and use their existing `glab` login.
 
+Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it.
+
 The user supplies their own OpenProject URL and API token. Do not ask them to paste a token into chat, print it, place it in command arguments, or write it to a configuration file. Direct them to set it in their environment:
 
 ```bash
@@ -60,11 +62,13 @@ openproject update 123 --status "In progress" --percent 40 --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
 openproject commit-link HEAD --format url
+openproject uninstall --dry-run --json
 ```
 
 ## Operational rules
 
 - Treat `create`, `update`, `comment`, and `log-time` as external writes; perform them only when the user explicitly requests that action.
+- Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
 - Send relationship values through `_links` with `href`.
 - Do not expose authorization headers, tokens, or secrets in output.
