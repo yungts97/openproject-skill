@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: openproject-x86_64-unknown-linux-musl.tar.gz
+            cross: true
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            archive: openproject-aarch64-unknown-linux-musl.tar.gz
+            cross: true
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: openproject-x86_64-apple-darwin.tar.gz
+            cross: false
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            archive: openproject-aarch64-apple-darwin.tar.gz
+            cross: false
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: openproject-x86_64-pc-windows-msvc.zip
+            cross: false
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: openproject-aarch64-pc-windows-msvc.zip
+            cross: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+      - if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+      - if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+      - if: runner.os != 'Windows'
+        run: tar -C target/${{ matrix.target }}/release -czf ${{ matrix.archive }} openproject
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/openproject.exe -DestinationPath ${{ matrix.archive }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - working-directory: release
+        run: sha256sum openproject-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

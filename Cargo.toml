@@ -1,0 +1,21 @@
+[package]
+name = "openproject-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A portable command-line client for the OpenProject API v3"
+repository = "https://github.com/yungts97/openproject-skill"
+
+[[bin]]
+name = "openproject"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+serde_json = "1"
+url = "2"
