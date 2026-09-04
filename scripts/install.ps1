@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Installs or upgrades the OpenProject CLI.
+Installs or upgrades the OpenProject CLI and Agent Skill.
 
 .PARAMETER Version
 Release version to install, with or without a leading "v". Defaults to the latest GitHub release.
@@ -8,11 +8,14 @@ Release version to install, with or without a leading "v". Defaults to the lates
 .PARAMETER Destination
 Installation directory. Defaults to OPENPROJECT_INSTALL_DIR when set, then the user's local application data directory.
 
+.PARAMETER SkillDestination
+Agent Skills directory. Defaults to OPENPROJECT_SKILL_DIR when set, then ~/.agents/skills.
+
 .EXAMPLE
 ./install.ps1
 
 .EXAMPLE
-./install.ps1 -Version 0.1.2 -Destination C:\Tools
+./install.ps1 -Version 0.1.2 -Destination C:\Tools -SkillDestination C:\AgentSkills
 #>
 [CmdletBinding()]
 param(
@@ -28,8 +31,20 @@ param(
     } else {
       Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "openproject\bin"
     }
+  ),
+
+  [Parameter(Position = 2)]
+  [ValidateNotNullOrEmpty()]
+  [string]$SkillDestination = $(
+    if ($env:OPENPROJECT_SKILL_DIR) {
+      $env:OPENPROJECT_SKILL_DIR
+    } else {
+      Join-Path ([Environment]::GetFolderPath("UserProfile")) ".agents\skills"
+    }
   )
 )
+
+$SkillDestinationSupplied = $PSBoundParameters.ContainsKey("SkillDestination")
 
 & {
 $ErrorActionPreference = "Stop"
@@ -37,7 +52,46 @@ Set-StrictMode -Version Latest
 
 function Write-Step {
   param([int]$Number, [string]$Message)
-  Write-Host "[$Number/4] $Message"
+  Write-Host "[$Number/5] $Message"
+}
+
+function Confirm-Checksum {
+  param([string]$Asset)
+  $ChecksumPattern = "^[a-fA-F0-9]{64}\s+\*?$([regex]::Escape($Asset))$"
+  $ChecksumLine = Get-Content (Join-Path $Temporary $Checksums) |
+    Where-Object { $_ -match $ChecksumPattern } |
+    Select-Object -First 1
+  if (-not $ChecksumLine) {
+    throw "No checksum was published for $Asset."
+  }
+  $Expected = ($ChecksumLine -split "\s+", 2)[0]
+  $Actual = (Get-FileHash (Join-Path $Temporary $Asset) -Algorithm SHA256).Hash
+  if ($Actual -ne $Expected) {
+    throw "Checksum verification failed for $Asset. The downloaded file may be damaged or unsafe."
+  }
+}
+
+function Install-AgentSkill {
+  param([string]$Root)
+  $SkillDirectory = Join-Path $Root "openproject"
+  $SkillFile = Join-Path $SkillDirectory "SKILL.md"
+  $SkillAction = if (Test-Path -LiteralPath $SkillFile) { "Upgraded" } else { "Installed" }
+  try {
+    New-Item -ItemType Directory -Force -Path $SkillDirectory | Out-Null
+  } catch {
+    throw "Could not create $SkillDirectory. Choose a writable directory with -SkillDestination or OPENPROJECT_SKILL_DIR. $($_.Exception.Message)"
+  }
+
+  $SkillStaged = Join-Path $SkillDirectory ".SKILL.md.new.$PID"
+  try {
+    Copy-Item -LiteralPath (Join-Path $Temporary $SkillAsset) -Destination $SkillStaged -Force
+    Move-Item -LiteralPath $SkillStaged -Destination $SkillFile -Force
+  } finally {
+    if (Test-Path -LiteralPath $SkillStaged) {
+      Remove-Item -LiteralPath $SkillStaged -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Write-Host "  $SkillAction $SkillFile"
 }
 
 $Repository = if ($env:OPENPROJECT_RELEASE_REPOSITORY) { $env:OPENPROJECT_RELEASE_REPOSITORY.Trim("/") } else { "yungts97/openproject-skill" }
@@ -59,17 +113,32 @@ $Target = switch ($Architecture) {
 
 $Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)
 $Archive = "openproject-$Target.zip"
+$SkillAsset = "openproject-agent-skill.md"
 $Checksums = "SHA256SUMS"
 $Executable = Join-Path $Destination "openproject.exe"
 $Action = if (Test-Path -LiteralPath $Executable) { "Upgraded" } else { "Installed" }
 $Temporary = $null
 $Staged = $null
 
-Write-Host "OpenProject CLI installer"
+if (-not $env:OPENPROJECT_SKILL_DIR -and -not $SkillDestinationSupplied) {
+  $ClaudeRoot = Join-Path ([Environment]::GetFolderPath("UserProfile")) ".claude"
+  $ClaudeSkillDestination = if ((Get-Command claude -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $ClaudeRoot)) {
+    Join-Path $ClaudeRoot "skills"
+  } else {
+    $null
+  }
+} else {
+  $ClaudeSkillDestination = $null
+}
+
+$SkillDestination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SkillDestination)
+
+Write-Host "OpenProject CLI and Agent Skill installer"
 Write-Host ""
 Write-Host "  Version:     $Version"
 Write-Host "  Target:      $Target"
 Write-Host "  Destination: $Executable"
+Write-Host "  Agent Skill: $(Join-Path (Join-Path $SkillDestination 'openproject') 'SKILL.md')"
 Write-Host ""
 
 try {
@@ -86,13 +155,13 @@ try {
   $Temporary = Join-Path ([IO.Path]::GetTempPath()) ("openproject-" + [guid]::NewGuid())
   New-Item -ItemType Directory -Force -Path $Temporary | Out-Null
 
-  Write-Step 2 "Downloading $Archive"
+  Write-Step 2 "Downloading release assets"
   if ($env:OPENPROJECT_GITLAB_PROJECT) {
     $GlabArguments = @("release", "download", $RequestedVersion)
     if ($env:OPENPROJECT_GITLAB_HOST) {
       $GlabArguments += @("--hostname", $env:OPENPROJECT_GITLAB_HOST)
     }
-    $GlabArguments += @("--repo", $env:OPENPROJECT_GITLAB_PROJECT, "--pattern", $Archive, "--pattern", $Checksums, "--dir", $Temporary)
+    $GlabArguments += @("--repo", $env:OPENPROJECT_GITLAB_PROJECT, "--pattern", $Archive, "--pattern", $SkillAsset, "--pattern", $Checksums, "--dir", $Temporary)
     & glab @GlabArguments
     if ($LASTEXITCODE -ne 0) {
       throw "Could not download release $RequestedVersion from GitLab. Check the version and your glab authentication."
@@ -109,25 +178,20 @@ try {
       throw "Could not download $Archive. Check the release version and your network connection. $($_.Exception.Message)"
     }
     try {
+      Invoke-WebRequest "$Base/$SkillAsset" -OutFile (Join-Path $Temporary $SkillAsset)
+    } catch {
+      throw "Could not download $SkillAsset. The release may be incomplete. $($_.Exception.Message)"
+    }
+    try {
       Invoke-WebRequest "$Base/$Checksums" -OutFile (Join-Path $Temporary $Checksums)
     } catch {
       throw "Could not download $Checksums. The release may be incomplete. $($_.Exception.Message)"
     }
   }
 
-  Write-Step 3 "Verifying the SHA-256 checksum"
-  $ChecksumPattern = "^[a-fA-F0-9]{64}\s+\*?$([regex]::Escape($Archive))$"
-  $ChecksumLine = Get-Content (Join-Path $Temporary $Checksums) |
-    Where-Object { $_ -match $ChecksumPattern } |
-    Select-Object -First 1
-  if (-not $ChecksumLine) {
-    throw "No checksum was published for $Archive."
-  }
-  $Expected = ($ChecksumLine -split "\s+", 2)[0]
-  $Actual = (Get-FileHash (Join-Path $Temporary $Archive) -Algorithm SHA256).Hash
-  if ($Actual -ne $Expected) {
-    throw "Checksum verification failed. The downloaded archive may be damaged or unsafe."
-  }
+  Write-Step 3 "Verifying SHA-256 checksums"
+  Confirm-Checksum $Archive
+  Confirm-Checksum $SkillAsset
 
   Write-Step 4 "$Action OpenProject CLI"
   try {
@@ -152,8 +216,14 @@ try {
   }
   $Staged = $null
 
+  Write-Step 5 "Installing OpenProject Agent Skill"
+  Install-AgentSkill $SkillDestination
+  if ($ClaudeSkillDestination -and $ClaudeSkillDestination -ne $SkillDestination) {
+    Install-AgentSkill $ClaudeSkillDestination
+  }
+
   Write-Host ""
-  Write-Host "Success: $Action $Executable"
+  Write-Host "Success: $Action $Executable and installed the OpenProject Agent Skill"
   $PathEntries = @($env:PATH -split [IO.Path]::PathSeparator | ForEach-Object { $_.TrimEnd("\") })
   if ($PathEntries -notcontains $Destination.TrimEnd("\")) {
     Write-Host ""
@@ -162,6 +232,7 @@ try {
   Write-Host ""
   Write-Host "Verify the installation:"
   Write-Host "  & '$Executable' --version"
+  Write-Host "Restart your agent session if it does not detect the newly installed skill."
 
   if ($Action -eq "Installed") {
     $CanPrompt = $false

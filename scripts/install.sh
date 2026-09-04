@@ -3,7 +3,7 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Install or upgrade the OpenProject CLI.
+Install or upgrade the OpenProject CLI and Agent Skill.
 
 Usage:
   install.sh [VERSION]
@@ -14,6 +14,7 @@ Arguments:
 
 Environment variables:
   OPENPROJECT_INSTALL_DIR         Installation directory (default: ~/.local/bin)
+  OPENPROJECT_SKILL_DIR           Agent Skills directory (default: ~/.agents/skills)
   OPENPROJECT_RELEASE_REPOSITORY  GitHub repository (default: yungts97/openproject-skill)
   OPENPROJECT_GITLAB_PROJECT      Private GitLab project used instead of GitHub
   OPENPROJECT_GITLAB_HOST         Optional hostname for a private GitLab instance
@@ -25,7 +26,7 @@ info() {
 }
 
 step() {
-  printf '[%s/4] %s\n' "$1" "$2"
+  printf '[%s/5] %s\n' "$1" "$2"
 }
 
 fail() {
@@ -71,6 +72,18 @@ else
   DESTINATION="$HOME/.local/bin"
 fi
 
+if [ -n "${OPENPROJECT_SKILL_DIR:-}" ]; then
+  SKILL_ROOT="$OPENPROJECT_SKILL_DIR"
+else
+  [ -n "${HOME:-}" ] || fail "HOME is not set. Set OPENPROJECT_SKILL_DIR to choose an Agent Skills directory."
+  SKILL_ROOT="$HOME/.agents/skills"
+fi
+
+CLAUDE_SKILL_ROOT=""
+if [ -z "${OPENPROJECT_SKILL_DIR:-}" ] && { command -v claude >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; }; then
+  CLAUDE_SKILL_ROOT="$HOME/.claude/skills"
+fi
+
 case "$(uname -s)" in
   Darwin) OS="apple-darwin" ;;
   Linux) OS="unknown-linux-musl" ;;
@@ -85,6 +98,7 @@ esac
 
 TARGET="${ARCH}-${OS}"
 ARCHIVE="openproject-${TARGET}.tar.gz"
+SKILL_ASSET="openproject-agent-skill.md"
 CHECKSUMS="SHA256SUMS"
 EXECUTABLE="$DESTINATION/openproject"
 STAGED=""
@@ -100,14 +114,52 @@ cleanup() {
     rm -rf "$TEMP_DIR"
   fi
 }
+
+verify_checksum() {
+  ASSET="$1"
+  CHECK_LINE="$(
+    while IFS= read -r line; do
+      case "$line" in
+        *" $ASSET"|*" *$ASSET")
+          printf '%s\n' "$line"
+          break
+          ;;
+      esac
+    done < "$TEMP_DIR/$CHECKSUMS"
+  )"
+  [ -n "$CHECK_LINE" ] || fail "No checksum was published for $ASSET."
+
+  if [ "$CHECKSUM_COMMAND" = "sha256sum" ]; then
+    printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && sha256sum --check - >/dev/null) || fail "Checksum verification failed for $ASSET. The downloaded file may be damaged or unsafe."
+  else
+    printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && shasum -a 256 -c - >/dev/null) || fail "Checksum verification failed for $ASSET. The downloaded file may be damaged or unsafe."
+  fi
+}
+
+install_skill() {
+  ROOT="$1"
+  SKILL_DIRECTORY="$ROOT/openproject"
+  SKILL_FILE="$SKILL_DIRECTORY/SKILL.md"
+  SKILL_ACTION="Installed"
+  [ ! -e "$SKILL_FILE" ] && [ ! -L "$SKILL_FILE" ] || SKILL_ACTION="Upgraded"
+
+  mkdir -p "$SKILL_DIRECTORY" || fail "Could not create $SKILL_DIRECTORY. Set OPENPROJECT_SKILL_DIR to a writable Agent Skills directory."
+  [ -w "$SKILL_DIRECTORY" ] || fail "$SKILL_DIRECTORY is not writable. Set OPENPROJECT_SKILL_DIR to a writable Agent Skills directory."
+  STAGED="$SKILL_DIRECTORY/.SKILL.md.new.$$"
+  cp "$TEMP_DIR/$SKILL_ASSET" "$STAGED" || fail "Could not stage the OpenProject Agent Skill in $SKILL_DIRECTORY."
+  mv -f "$STAGED" "$SKILL_FILE" || fail "Could not replace $SKILL_FILE."
+  STAGED=""
+  info "  $SKILL_ACTION $SKILL_FILE"
+}
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-info "OpenProject CLI installer"
+info "OpenProject CLI and Agent Skill installer"
 info ""
 info "  Version:     $VERSION"
 info "  Target:      $TARGET"
 info "  Destination: $EXECUTABLE"
+info "  Agent Skill: $SKILL_ROOT/openproject/SKILL.md"
 info ""
 
 step 1 "Checking system requirements"
@@ -134,12 +186,12 @@ fi
 
 TEMP_DIR="$(mktemp -d)" || fail "Could not create a temporary directory."
 
-step 2 "Downloading $ARCHIVE"
+step 2 "Downloading release assets"
 if [ -n "${OPENPROJECT_GITLAB_PROJECT:-}" ]; then
   if [ -n "${OPENPROJECT_GITLAB_HOST:-}" ]; then
-    glab release download "$REQUESTED_VERSION" --hostname "$OPENPROJECT_GITLAB_HOST" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$ARCHIVE" --pattern "$CHECKSUMS" --dir "$TEMP_DIR" || fail "Could not download release $REQUESTED_VERSION from GitLab. Check the version and your glab authentication."
+    glab release download "$REQUESTED_VERSION" --hostname "$OPENPROJECT_GITLAB_HOST" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$ARCHIVE" --pattern "$SKILL_ASSET" --pattern "$CHECKSUMS" --dir "$TEMP_DIR" || fail "Could not download release $REQUESTED_VERSION from GitLab. Check the version and your glab authentication."
   else
-    glab release download "$REQUESTED_VERSION" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$ARCHIVE" --pattern "$CHECKSUMS" --dir "$TEMP_DIR" || fail "Could not download release $REQUESTED_VERSION from GitLab. Check the version and your glab authentication."
+    glab release download "$REQUESTED_VERSION" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$ARCHIVE" --pattern "$SKILL_ASSET" --pattern "$CHECKSUMS" --dir "$TEMP_DIR" || fail "Could not download release $REQUESTED_VERSION from GitLab. Check the version and your glab authentication."
   fi
 else
   BASE="https://github.com/${REPOSITORY}/releases"
@@ -149,27 +201,13 @@ else
     BASE="$BASE/download/v$VERSION"
   fi
   curl --fail --location --silent --show-error "$BASE/$ARCHIVE" --output "$TEMP_DIR/$ARCHIVE" || fail "Could not download $ARCHIVE. Check the release version and your network connection."
+  curl --fail --location --silent --show-error "$BASE/$SKILL_ASSET" --output "$TEMP_DIR/$SKILL_ASSET" || fail "Could not download $SKILL_ASSET. The release may be incomplete."
   curl --fail --location --silent --show-error "$BASE/$CHECKSUMS" --output "$TEMP_DIR/$CHECKSUMS" || fail "Could not download $CHECKSUMS. The release may be incomplete."
 fi
 
-step 3 "Verifying the SHA-256 checksum"
-CHECK_LINE="$(
-  while IFS= read -r line; do
-    case "$line" in
-      *" $ARCHIVE"|*" *$ARCHIVE")
-        printf '%s\n' "$line"
-        break
-        ;;
-    esac
-  done < "$TEMP_DIR/$CHECKSUMS"
-)"
-[ -n "$CHECK_LINE" ] || fail "No checksum was published for $ARCHIVE."
-
-if [ "$CHECKSUM_COMMAND" = "sha256sum" ]; then
-  printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && sha256sum --check - >/dev/null) || fail "Checksum verification failed. The downloaded archive may be damaged or unsafe."
-else
-  printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && shasum -a 256 -c - >/dev/null) || fail "Checksum verification failed. The downloaded archive may be damaged or unsafe."
-fi
+step 3 "Verifying SHA-256 checksums"
+verify_checksum "$ARCHIVE"
+verify_checksum "$SKILL_ASSET"
 
 step 4 "$ACTION OpenProject CLI"
 mkdir -p "$DESTINATION" || fail "Could not create $DESTINATION. Set OPENPROJECT_INSTALL_DIR to a writable directory."
@@ -183,8 +221,14 @@ chmod +x "$STAGED" || fail "Could not make the OpenProject executable runnable."
 mv -f "$STAGED" "$EXECUTABLE" || fail "Could not replace $EXECUTABLE. Make sure it is not in use and try again."
 STAGED=""
 
+step 5 "Installing OpenProject Agent Skill"
+install_skill "$SKILL_ROOT"
+if [ -n "$CLAUDE_SKILL_ROOT" ] && [ "$CLAUDE_SKILL_ROOT" != "$SKILL_ROOT" ]; then
+  install_skill "$CLAUDE_SKILL_ROOT"
+fi
+
 info ""
-info "Success: $ACTION $EXECUTABLE"
+info "Success: $ACTION $EXECUTABLE and installed the OpenProject Agent Skill"
 case ":${PATH:-}:" in
   *":$DESTINATION:"*) ;;
   *)
@@ -196,6 +240,7 @@ esac
 info ""
 info "Verify the installation:"
 printf '  "%s" --version\n' "$EXECUTABLE"
+info "Restart your agent session if it does not detect the newly installed skill."
 
 if [ "$ACTION" = "Installed" ]; then
   if [ -t 0 ] && [ -t 1 ]; then

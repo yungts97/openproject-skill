@@ -74,8 +74,8 @@ enum Commands {
     CommitLink(CommitLinkArgs),
     /// Upgrade this executable from the configured GitHub release repository.
     Upgrade(UpgradeArgs),
-    /// Remove this OpenProject executable. Configuration and Agent Skill files are preserved.
-    Uninstall,
+    /// Remove this OpenProject executable. Configuration and Agent Skill files are preserved unless --purge is used.
+    Uninstall(UninstallArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -108,6 +108,13 @@ struct UpgradeArgs {
     /// Release version to install, or "latest".
     #[arg(default_value = "latest")]
     version: String,
+}
+
+#[derive(Args, Debug)]
+struct UninstallArgs {
+    /// Also remove global configuration and the stored credential for its host.
+    #[arg(long)]
+    purge: bool,
 }
 
 #[derive(Args, Debug)]
@@ -426,6 +433,7 @@ trait CredentialStore {
     fn name(&self) -> &'static str;
     fn load(&self) -> Result<Option<String>>;
     fn save(&self, token: &str) -> Result<()>;
+    fn delete(&self) -> Result<bool>;
 }
 
 struct NativeCredentialStore {
@@ -464,6 +472,15 @@ impl CredentialStore for NativeCredentialStore {
         self.entry()?
             .set_password(token)
             .context("cannot save the OpenProject token in the system credential store")
+    }
+
+    fn delete(&self) -> Result<bool> {
+        match self.entry()?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(KeyringError::NoEntry) => Ok(false),
+            Err(error) => Err(anyhow!(error))
+                .context("cannot remove the OpenProject token from the system credential store"),
+        }
     }
 }
 
@@ -536,6 +553,25 @@ impl CredentialStore for PassCredentialStore {
             bail!("pass could not save the OpenProject token")
         }
         Ok(())
+    }
+
+    fn delete(&self) -> Result<bool> {
+        if self.load()?.is_none() {
+            return Ok(false);
+        }
+        let status = Command::new("pass")
+            .arg("rm")
+            .arg("--force")
+            .arg(&self.entry)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .context("cannot run pass")?;
+        if !status.success() {
+            bail!("pass could not remove the OpenProject token")
+        }
+        Ok(true)
     }
 }
 
@@ -933,6 +969,86 @@ fn remove_current_executable(path: &Path) -> Result<&'static str> {
     Ok("scheduled")
 }
 
+struct PurgePlan {
+    config_path: PathBuf,
+    config_directory: PathBuf,
+    credential_host: Option<String>,
+}
+
+fn purge_plan(cli: &Cli) -> Result<PurgePlan> {
+    let config_path = global_config_path()
+        .ok_or_else(|| anyhow!("cannot determine the global config directory"))?;
+    let config_directory = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("global config path has no parent directory"))?
+        .to_path_buf();
+
+    let environment_host = env::var("OPENPROJECT_URL").ok();
+    let configured_host = if cli.host.is_none() && environment_host.is_none() {
+        let settings = read_config(&config_path)?;
+        validate_keys(&settings, &["host"], &config_path)?;
+        host_setting(&settings, &config_path)?
+    } else {
+        None
+    };
+    let credential_host = cli
+        .host
+        .clone()
+        .or(environment_host)
+        .or(configured_host)
+        .map(|host| canonical_host(&host))
+        .transpose()?;
+
+    Ok(PurgePlan {
+        config_path,
+        config_directory,
+        credential_host,
+    })
+}
+
+fn remove_global_config(plan: &PurgePlan) -> Result<Value> {
+    let mut removed_credentials = Vec::new();
+    if let Some(host) = &plan.credential_host {
+        for store in credential_stores(host) {
+            if store.delete()? {
+                removed_credentials.push(store.name());
+            }
+        }
+    }
+
+    let config_status = match fs::remove_file(&plan.config_path) {
+        Ok(()) => "removed",
+        Err(error) if error.kind() == ErrorKind::NotFound => "not_found",
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("cannot remove global config {}", plan.config_path.display())
+            })
+        }
+    };
+    let directory_status = match fs::remove_dir(&plan.config_directory) {
+        Ok(()) => "removed",
+        Err(error) if error.kind() == ErrorKind::NotFound => "not_found",
+        Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => "not_empty",
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "cannot remove global config directory {}",
+                    plan.config_directory.display()
+                )
+            })
+        }
+    };
+
+    Ok(json!({
+        "configPath": plan.config_path.display().to_string(),
+        "configStatus": config_status,
+        "configDirectory": plan.config_directory.display().to_string(),
+        "configDirectoryStatus": directory_status,
+        "credentialHost": &plan.credential_host,
+        "credentialStoresRemoved": removed_credentials,
+    }))
+}
+
 fn installer_url() -> String {
     let repository = env::var("OPENPROJECT_RELEASE_REPOSITORY")
         .unwrap_or_else(|_| DEFAULT_RELEASE_REPOSITORY.to_string());
@@ -1109,28 +1225,66 @@ fn upgrade(cli: &Cli, args: &UpgradeArgs) -> Result<()> {
     }
 }
 
-fn uninstall(cli: &Cli) -> Result<()> {
+fn uninstall(cli: &Cli, args: &UninstallArgs) -> Result<()> {
     let executable = env::current_exe().context("cannot locate the current executable")?;
     let path = executable.display().to_string();
+    let purge = args.purge.then(|| purge_plan(cli)).transpose()?;
     if cli.dry_run {
         if cli.json {
             emit(
-                json!({"dryRun":true,"operation":"uninstall","path":path}),
+                json!({
+                    "dryRun":true,
+                    "operation":"uninstall",
+                    "path":path,
+                    "purge": purge.as_ref().map(|plan| json!({
+                        "configPath": plan.config_path.display().to_string(),
+                        "configDirectory": plan.config_directory.display().to_string(),
+                        "credentialHost": &plan.credential_host,
+                    })),
+                }),
                 true,
             );
         } else {
             println!("Would remove {path}");
+            if let Some(plan) = &purge {
+                println!("Would remove global config {}", plan.config_path.display());
+                println!(
+                    "Would remove global config directory {} if it is empty",
+                    plan.config_directory.display()
+                );
+                if let Some(host) = &plan.credential_host {
+                    println!("Would remove stored credentials for {host}");
+                } else {
+                    println!("No configured host found; stored credentials would be preserved");
+                }
+            }
         }
         return Ok(());
     }
 
+    let purge = purge.as_ref().map(remove_global_config).transpose()?;
     let status = remove_current_executable(&executable)?;
     if cli.json {
-        emit(json!({"path":path,"status":status}), true);
+        emit(json!({"path":path,"status":status,"purge":purge}), true);
     } else if status == "scheduled" {
         println!("Scheduled removal of {path} after this process exits");
     } else {
         println!("Removed {path}");
+    }
+    if let Some(purge) = purge {
+        println!("Global config: {}", purge["configStatus"]);
+        println!(
+            "Global config directory: {}",
+            purge["configDirectoryStatus"]
+        );
+        if purge["credentialStoresRemoved"]
+            .as_array()
+            .is_some_and(|stores| stores.is_empty())
+        {
+            println!("Stored credentials: none removed");
+        } else {
+            println!("Stored credentials: removed");
+        }
     }
     Ok(())
 }
@@ -1139,8 +1293,8 @@ fn run(cli: &Cli) -> Result<()> {
     if let Commands::Upgrade(args) = &cli.command {
         return upgrade(cli, args);
     }
-    if let Commands::Uninstall = &cli.command {
-        return uninstall(cli);
+    if let Commands::Uninstall(args) = &cli.command {
+        return uninstall(cli, args);
     }
     if let Commands::CommitLink(args) = &cli.command {
         let result = commit_link(&cli.cwd, args)?;
@@ -1322,7 +1476,7 @@ fn run(cli: &Cli) -> Result<()> {
         }
         | Commands::CommitLink(_)
         | Commands::Upgrade(_)
-        | Commands::Uninstall => unreachable!(),
+        | Commands::Uninstall(_) => unreachable!(),
     };
     Ok(())
 }
@@ -1385,6 +1539,10 @@ mod tests {
             *self.token.borrow_mut() = Some(token.to_owned());
             Ok(())
         }
+
+        fn delete(&self) -> Result<bool> {
+            Ok(self.token.borrow_mut().take().is_some())
+        }
     }
 
     #[test]
@@ -1403,6 +1561,15 @@ mod tests {
     fn uninstall_dry_run_does_not_require_openproject_credentials() {
         let cli = Cli::try_parse_from(["openproject", "uninstall", "--dry-run", "--json"]).unwrap();
         assert!(run(&cli).is_ok());
+    }
+
+    #[test]
+    fn uninstall_purge_is_opt_in() {
+        let cli = Cli::try_parse_from(["openproject", "uninstall", "--purge"]).unwrap();
+        let Commands::Uninstall(args) = cli.command else {
+            panic!("expected uninstall command");
+        };
+        assert!(args.purge);
     }
 
     #[test]
@@ -1519,6 +1686,15 @@ mod tests {
         let store = MemoryCredentialStore::empty();
         store.save("stored-token").unwrap();
         assert_eq!(store.load().unwrap().as_deref(), Some("stored-token"));
+    }
+
+    #[test]
+    fn credential_store_can_delete_a_token() {
+        let store = MemoryCredentialStore::empty();
+        store.save("stored-token").unwrap();
+        assert!(store.delete().unwrap());
+        assert_eq!(store.load().unwrap(), None);
+        assert!(!store.delete().unwrap());
     }
 
     #[test]

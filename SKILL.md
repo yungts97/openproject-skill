@@ -11,13 +11,13 @@ Use the bundled `openproject` CLI. It is portable and non-interactive by default
 
 ## Installation and setup
 
-Check availability with `openproject --version`. If the executable is missing, explain that the platform installer downloads a release archive and verifies its SHA-256 checksum, then obtain approval before running `scripts/install.sh` on Linux/macOS or `scripts/install.ps1` on Windows.
+Check availability with `openproject --version`. If the executable or this Agent Skill is missing, explain that the platform installer downloads the release-pinned CLI and skill and verifies their SHA-256 checksums, then obtain approval before running `scripts/install.sh` on Linux/macOS or `scripts/install.ps1` on Windows.
 
 Upgrade an existing executable with `openproject upgrade`, optionally followed by a version without the leading `v`. Use `openproject upgrade --dry-run --json` when the source or destination needs review. Rerunning the platform installer also detects and upgrades an existing executable. Obtain approval before either upgrade path because it downloads and replaces the local executable.
 
-The public skill source is the repository root of `yungts97/openproject-skill`. The executable installation is separate because it is platform-specific. Users with a private GitLab mirror may set `OPENPROJECT_GITLAB_PROJECT`, optionally `OPENPROJECT_GITLAB_HOST`, and use their existing `glab` login.
+The public skill source is the repository root of `yungts97/openproject-skill`. The platform installer installs the CLI and skill together; set `OPENPROJECT_SKILL_DIR` when the agent requires a nonstandard user-level skill directory. Users with a private GitLab mirror may set `OPENPROJECT_GITLAB_PROJECT`, optionally `OPENPROJECT_GITLAB_HOST`, and use their existing `glab` login.
 
-Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it.
+Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it. Use `openproject uninstall --purge` only when the user explicitly requests complete local cleanup: it removes global configuration and the stored credential for the configured host, but always preserves repository `.openproject.json` files and the separately installed Agent Skill. If global configuration is missing or invalid, pass `--host` to identify the credential to remove.
 
 The user supplies their own OpenProject URL and API token. Do not ask them to paste a token into chat, print it, place it in command arguments, or write it to a configuration file. For an interactive local terminal, direct them to run `openproject auth login`; it validates the token and stores it in the system credential manager, or an existing initialized `pass` store when the system manager is unavailable.
 
@@ -69,13 +69,14 @@ openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json
+openproject uninstall --purge --dry-run --json
 ```
 
 ## Operational rules
 
 - Treat `create`, `update`, `comment`, and `log-time` as external writes; perform them only when the user explicitly requests that action.
 - Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
-- Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable.
+- Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
 - Send relationship values through `_links` with `href`.
 - Do not expose authorization headers, tokens, or secrets in output.

@@ -14,7 +14,7 @@ Install the OpenProject Agent Skill and CLI by following https://github.com/yung
 
 ## Manual installation
 
-Run one command for your platform. It downloads the installer and matching artifact from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verifies the artifact against `SHA256SUMS` before installing it.
+Run one command for your platform. It downloads the installer, matching CLI artifact, and Agent Skill from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verifies both release files against `SHA256SUMS` before installing them.
 
 On Linux or macOS:
 
@@ -28,7 +28,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
 
-The default destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. Set `OPENPROJECT_INSTALL_DIR` to choose another location. On a new interactive installation, the installer offers to launch secure OpenProject setup; non-interactive installations print the command to run later.
+The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The skill is installed to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it to `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available. On a new interactive installation, the installer offers to launch secure OpenProject setup; non-interactive installations print the command to run later.
 
 Ensure the destination directory is on `PATH`, then verify the installation:
 
@@ -73,6 +73,8 @@ openproject uninstall
 Use `openproject uninstall --dry-run` to display the executable path without removing it. On Windows, removal is scheduled immediately after the command exits because a running executable cannot delete itself.
 
 This command preserves global and repository configuration as well as the separately installed Agent Skill. Remove the skill through the agent or skill manager that installed it.
+
+For a complete local cleanup, use `openproject uninstall --purge`. It removes the global configuration file, removes its directory only when empty, and deletes the stored credential for the configured host before removing the executable. If the global configuration is missing or invalid, pass `--host https://openproject.example.com` to identify the credential to remove. Repository `.openproject.json` files and the separately installed Agent Skill are always preserved. Use `--dry-run` to preview every target.
 
 ## Authentication
 
@@ -213,6 +215,7 @@ openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json
+openproject uninstall --purge --dry-run --json
 ```
 
 ## Agent-friendly operation
