@@ -1,6 +1,6 @@
 # OpenProject CLI and Agent Skill
 
-`openproject` is a portable, non-interactive command-line client for OpenProject API v3. This repository also contains an Agent Skill that teaches coding agents how to use the CLI safely for project and work-package operations.
+`openproject` is a portable OpenProject API v3 client. Its normal commands are non-interactive; `auth login` is the deliberate interactive setup command. This repository also contains an Agent Skill that teaches coding agents how to use the CLI safely for project and work-package operations.
 
 The CLI supports Linux, macOS, and Windows on x86-64 and ARM64. It provides human-readable output, machine-readable JSON, dry runs for mutations, repository-aware project resolution, and configuration at global and project scope.
 
@@ -9,10 +9,8 @@ The CLI supports Linux, macOS, and Windows on x86-64 and ARM64. It provides huma
 Paste this into Claude Code, OpenCode, Pi, Codex, or another agent that supports Agent Skills:
 
 ```text
-Install the OpenProject skill from https://github.com/yungts97/openproject-skill and set up its CLI for my system.
+Install the OpenProject Agent Skill and CLI by following https://github.com/yungts97/openproject-skill/blob/main/INSTALL-WITH-AN-AGENT.md
 ```
-
-The skill and executable are separate installations. The skill supplies agent instructions; the executable is a platform-specific release artifact.
 
 ## Manual installation
 
@@ -30,7 +28,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
 
-The default destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. Set `OPENPROJECT_INSTALL_DIR` to choose another location. The installers report each download, verification, and installation step, then show the exact command to verify the executable.
+The default destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. Set `OPENPROJECT_INSTALL_DIR` to choose another location. On a new interactive installation, the installer offers to launch secure OpenProject setup; non-interactive installations print the command to run later.
 
 Ensure the destination directory is on `PATH`, then verify the installation:
 
@@ -78,7 +76,15 @@ This command preserves global and repository configuration as well as the separa
 
 ## Authentication
 
-Create an API token in OpenProject under **My account → Access token**. The token is accepted only through `OPENPROJECT_TOKEN`; it is never accepted as a command-line argument or configuration-file value.
+Create an API token in OpenProject under **My account → Access token**. For a persistent interactive setup, run:
+
+```sh
+openproject auth login
+```
+
+The guided setup asks for your server URL (showing `https://openproject.example.com` as an example), reads the token without echoing it, validates the credentials, stores the host in global configuration, and saves the token securely. It uses Keychain on macOS, Credential Manager on Windows, and Secret Service on Linux; an existing initialized `pass` store is used only when the native store is unavailable.
+
+If no secure store is available—for example, on a headless Linux machine without `pass`—use `OPENPROJECT_TOKEN` for the current session or automation. The CLI never writes a plaintext token file.
 
 Linux or macOS:
 
@@ -96,7 +102,7 @@ $env:OPENPROJECT_TOKEN = "opapi-..."
 openproject auth verify
 ```
 
-Avoid committing tokens, including them in prompts, or placing them in `.openproject.json`.
+`OPENPROJECT_TOKEN` overrides stored credentials, so it is suitable for CI and temporary sessions. Tokens are never accepted as command-line arguments or configuration-file values; do not commit them, include them in prompts, or place them in `.openproject.json`.
 
 ## Configuration
 
@@ -144,6 +150,12 @@ The host is resolved in this order:
 3. Project `.openproject.json`
 4. Global `config.json`
 
+The token is resolved in this order:
+
+1. `OPENPROJECT_TOKEN`
+2. The platform credential store
+3. An initialized `pass` store
+
 The project is resolved in this order:
 
 1. A command's `--project`
@@ -169,7 +181,8 @@ Global options may be supplied before or after a subcommand.
 
 | Command | Purpose and important arguments |
 | --- | --- |
-| `auth verify` | Validate the URL and token by loading the current user |
+| `auth login` | Interactively validate and save the host and token in a secure credential store |
+| `auth verify` | Validate the resolved URL and token by loading the current user |
 | `projects` | List all visible OpenProject projects |
 | `project [--project ID_OR_NAME]` | Resolve and display the project for the repository |
 | `tasks [--project ID_OR_NAME] [--all] [--assignee ID_OR_ME] [--query TEXT]` | List project work packages; closed items are hidden unless `--all` is used |
@@ -204,7 +217,7 @@ openproject uninstall --dry-run --json
 
 ## Agent-friendly operation
 
-The CLI never opens an interactive prompt, making it suitable for coding agents and automation.
+All commands except `auth login` remain non-interactive, making them suitable for coding agents and automation.
 
 - Use `--json` for deterministic structured results.
 - Successful commands exit with code `0`. Runtime failures exit with code `1`; argument errors use Clap's non-zero exit behavior.

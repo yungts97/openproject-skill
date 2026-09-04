@@ -7,7 +7,7 @@ metadata:
 
 # OpenProject
 
-Use the bundled `openproject` CLI. It is portable, non-interactive, and independent of `pass`, GPG, Python, or any specific OpenProject instance.
+Use the bundled `openproject` CLI. It is portable and non-interactive by default; only `openproject auth login` prompts deliberately for local credential setup.
 
 ## Installation and setup
 
@@ -19,7 +19,9 @@ The public skill source is the repository root of `yungts97/openproject-skill`. 
 
 Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it.
 
-The user supplies their own OpenProject URL and API token. Do not ask them to paste a token into chat, print it, place it in command arguments, or write it to a configuration file. Direct them to set it in their environment:
+The user supplies their own OpenProject URL and API token. Do not ask them to paste a token into chat, print it, place it in command arguments, or write it to a configuration file. For an interactive local terminal, direct them to run `openproject auth login`; it validates the token and stores it in the system credential manager, or an existing initialized `pass` store when the system manager is unavailable.
+
+For agents, CI, headless machines, and temporary sessions, direct them to set the token in their environment:
 
 ```bash
 export OPENPROJECT_TOKEN="opapi-..."
@@ -48,13 +50,14 @@ Read repository guidance before external writes. Use an explicit `--project` whe
 
 - Prefer `--json` for reads and automation. Runtime failures use the JSON stderr shape `{"error":{"message":"..."}}` and a non-zero exit code.
 - Use `--dry-run --json` to review the method, API path, and payload when a write target or payload needs confirmation.
-- The CLI never prompts interactively. Do not infer that successful authentication authorizes a later write.
+- Only `auth login` prompts interactively. Do not infer that successful authentication authorizes a later write.
 - Resolve status, type, project, and user names exactly, or use numeric IDs when ambiguity is possible.
 - Run `openproject COMMAND --help` rather than guessing unsupported arguments.
 
 ## Commands
 
 ```bash
+openproject auth login
 openproject projects --json
 openproject project --project 13 --json
 openproject tasks --project 13 --assignee me --query approval --json

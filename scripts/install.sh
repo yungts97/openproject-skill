@@ -37,20 +37,30 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command '$1' was not found on PATH."
 }
 
-case "${1:-}" in
-  -h|--help)
-    usage
-    exit 0
-    ;;
-esac
-
-[ "$#" -le 1 ] || {
-  usage >&2
-  fail "Expected at most one version argument."
-}
-
 REPOSITORY="${OPENPROJECT_RELEASE_REPOSITORY:-yungts97/openproject-skill}"
-REQUESTED_VERSION="${1:-latest}"
+REQUESTED_VERSION="latest"
+VERSION_SUPPLIED=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -* )
+      usage >&2
+      fail "Unsupported option '$1'."
+      ;;
+    *)
+      [ "$VERSION_SUPPLIED" -eq 0 ] || {
+        usage >&2
+        fail "Expected at most one version argument."
+      }
+      REQUESTED_VERSION="$1"
+      VERSION_SUPPLIED=1
+      ;;
+  esac
+  shift
+done
 VERSION="${REQUESTED_VERSION#v}"
 [ -n "$VERSION" ] || fail "The release version cannot be empty."
 
@@ -186,3 +196,28 @@ esac
 info ""
 info "Verify the installation:"
 printf '  "%s" --version\n' "$EXECUTABLE"
+
+if [ "$ACTION" = "Installed" ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    info ""
+    printf 'Configure OpenProject now? [Y/n] '
+    IFS= read -r CONFIGURE_NOW || CONFIGURE_NOW="n"
+    case "$CONFIGURE_NOW" in
+      n|N|[Nn][Oo])
+        info "Run this later to configure securely:"
+        printf '  "%s" auth login\n' "$EXECUTABLE"
+        ;;
+      *)
+        if ! "$EXECUTABLE" auth login; then
+          info ""
+          info "OpenProject CLI was installed, but setup did not finish. Run this later:"
+          printf '  "%s" auth login\n' "$EXECUTABLE"
+        fi
+        ;;
+    esac
+  else
+    info ""
+    info "Configure OpenProject later in an interactive terminal:"
+    printf '  "%s" auth login\n' "$EXECUTABLE"
+  fi
+fi

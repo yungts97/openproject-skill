@@ -162,6 +162,32 @@ try {
   Write-Host ""
   Write-Host "Verify the installation:"
   Write-Host "  & '$Executable' --version"
+
+  if ($Action -eq "Installed") {
+    $CanPrompt = $false
+    try {
+      $CanPrompt = -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    } catch {
+      $CanPrompt = $false
+    }
+
+    if ($CanPrompt) {
+      $ConfigureNow = Read-Host "Configure OpenProject now? [Y/n]"
+      if ($ConfigureNow -notmatch '^(n|no)$') {
+        & $Executable auth login
+        if ($LASTEXITCODE -ne 0) {
+          Write-Warning "OpenProject CLI was installed, but setup did not finish. Run this later: & '$Executable' auth login"
+        }
+      } else {
+        Write-Host "Run this later to configure securely:"
+        Write-Host "  & '$Executable' auth login"
+      }
+    } else {
+      Write-Host ""
+      Write-Host "Configure OpenProject later in an interactive terminal:"
+      Write-Host "  & '$Executable' auth login"
+    }
+  }
 } catch {
   throw "OpenProject installation failed: $($_.Exception.Message)"
 } finally {
