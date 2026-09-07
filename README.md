@@ -174,9 +174,9 @@ The project is resolved in this order:
 
 1. A command's `--project`
 2. Project `project_id` or `project`
-3. An exact normalized match between the repository directory name and an OpenProject project name or identifier
+3. One unambiguous exact normalized match between an OpenProject project name or identifier and local project evidence: the Git-root directory name (or `--cwd` outside Git), the current directory name, the first README heading, or the `name` in `Cargo.toml`, `pyproject.toml`, `package.json`, or `composer.json`
 
-If project resolution is missing or ambiguous, the CLI stops instead of guessing.
+The CLI treats conflicting evidence as ambiguous and stops instead of guessing. When no exact match exists, it reports up to five related projects based on shared meaningful words or a contained project name; these are suggestions only and must be selected explicitly with `--project` or saved in `.openproject.json`. It does not search arbitrary README text.
 
 ## Global options
 

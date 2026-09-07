@@ -15,9 +15,9 @@ use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
 #[cfg(windows)]
 use std::process::Stdio;
+use std::process::{Command, ExitCode};
 use url::Url;
 
 const API_ACCEPT: &str = "application/hal+json, application/json";
@@ -877,6 +877,153 @@ fn normalize(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+fn add_project_candidate(candidates: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty()
+        && !normalize(value).is_empty()
+        && !candidates
+            .iter()
+            .any(|candidate| normalize(candidate) == normalize(value))
+    {
+        candidates.push(value.to_owned());
+    }
+}
+
+fn manifest_name(contents: &str, section: &str) -> Option<String> {
+    let mut in_section = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line == format!("[{section}]");
+            continue;
+        }
+        if in_section {
+            if let Some((key, value)) = line.split_once('=') {
+                if key.trim() == "name" {
+                    return Some(value.trim().trim_matches(['\"', '\'']).to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn project_candidates(cwd: &Path) -> Vec<String> {
+    let root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let mut candidates = Vec::new();
+    if let Some(name) = root.file_name().and_then(|name| name.to_str()) {
+        add_project_candidate(&mut candidates, name);
+    }
+    if root != cwd {
+        if let Some(name) = cwd.file_name().and_then(|name| name.to_str()) {
+            add_project_candidate(&mut candidates, name);
+        }
+    }
+
+    for readme in ["README.md", "README.MD", "readme.md", "README"] {
+        let path = root.join(readme);
+        if let Ok(contents) = fs::read_to_string(path) {
+            if let Some(heading) = contents
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("# "))
+            {
+                add_project_candidate(&mut candidates, heading);
+            }
+            break;
+        }
+    }
+
+    for (file, section) in [("Cargo.toml", "package"), ("pyproject.toml", "project")] {
+        if let Ok(contents) = fs::read_to_string(root.join(file)) {
+            if let Some(name) = manifest_name(&contents, section) {
+                add_project_candidate(&mut candidates, &name);
+            }
+        }
+    }
+    for file in ["package.json", "composer.json"] {
+        if let Ok(contents) = fs::read_to_string(root.join(file)) {
+            if let Some(name) = serde_json::from_str::<Value>(&contents)
+                .ok()
+                .and_then(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
+            {
+                add_project_candidate(&mut candidates, &name);
+            }
+        }
+    }
+    candidates
+}
+
+fn project_relevance(candidate: &str, project: &str) -> Option<usize> {
+    let candidate = normalize(candidate);
+    let project = normalize(project);
+    if candidate.is_empty() || project.is_empty() || candidate == project {
+        return None;
+    }
+    let shortest = candidate.len().min(project.len());
+    if shortest >= 4 && (candidate.contains(&project) || project.contains(&candidate)) {
+        return Some(200 + shortest);
+    }
+
+    let ignored = [
+        "app", "api", "backend", "cli", "client", "core", "frontend", "service", "web",
+    ];
+    let candidate_tokens: HashSet<_> = candidate
+        .split_whitespace()
+        .filter(|token| token.len() >= 3 && !ignored.contains(token))
+        .collect();
+    let project_tokens: HashSet<_> = project
+        .split_whitespace()
+        .filter(|token| token.len() >= 3 && !ignored.contains(token))
+        .collect();
+    let shared = candidate_tokens.intersection(&project_tokens).count();
+    if shared >= 2
+        || (shared == 1 && candidate_tokens.len().min(project_tokens.len()) == 1 && shortest >= 4)
+    {
+        Some(100 + shared * 10)
+    } else {
+        None
+    }
+}
+
+fn related_projects(projects: &[Value], candidates: &[String]) -> Vec<String> {
+    let mut matches: Vec<_> = projects
+        .iter()
+        .filter_map(|project| {
+            let name = project.get("name").and_then(Value::as_str)?;
+            let identifier = project.get("identifier").and_then(Value::as_str);
+            let score = candidates
+                .iter()
+                .filter_map(|candidate| {
+                    project_relevance(candidate, name)
+                        .into_iter()
+                        .chain(
+                            identifier
+                                .and_then(|identifier| project_relevance(candidate, identifier)),
+                        )
+                        .max()
+                })
+                .max()?;
+            let label = match (project.get("id").and_then(Value::as_u64), identifier) {
+                (Some(id), Some(identifier)) => format!("{name} ({identifier}, ID {id})"),
+                (Some(id), None) => format!("{name} (ID {id})"),
+                (None, Some(identifier)) => format!("{name} ({identifier})"),
+                (None, None) => name.to_owned(),
+            };
+            Some((score, label))
+        })
+        .collect();
+    matches.sort_by(|(left_score, left_label), (right_score, right_label)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_label.cmp(right_label))
+    });
+    matches
+        .into_iter()
+        .take(5)
+        .map(|(_, label)| label)
+        .collect()
+}
 fn href<'a>(value: &'a Value, name: &str) -> Option<&'a str> {
     value
         .pointer(&format!("/_links/{name}/href"))
@@ -924,22 +1071,38 @@ fn resolve_project(
             _ => bail!("multiple OpenProject projects match {value:?}; use a numeric --project"),
         };
     }
-    let root = git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let repo = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
+    let candidates = project_candidates(cwd);
     let matches: Vec<_> = projects
-        .into_iter()
+        .iter()
         .filter(|p| {
             [p.get("name"), p.get("identifier")]
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
-                .any(|x| normalize(x) == normalize(repo))
+                .any(|project_name| {
+                    candidates
+                        .iter()
+                        .any(|candidate| normalize(project_name) == normalize(candidate))
+                })
         })
+        .cloned()
         .collect();
-    match matches.len() { 1 => Ok(matches.into_iter().next().unwrap()), _ => bail!("cannot resolve this repository to one project safely; use --project or .openproject.json") }
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => {
+            let related = related_projects(&projects, &candidates);
+            if related.is_empty() {
+                bail!("cannot resolve this directory to one project safely; use --project or .openproject.json");
+            }
+            bail!(
+                "no exact project match for this directory; related projects: {}. Select one with --project or .openproject.json",
+                related.join("; ")
+            )
+        }
+        _ => bail!(
+            "multiple OpenProject projects exactly match this directory; use a numeric --project"
+        ),
+    }
 }
 
 fn resolve_item(client: &OpenProjectClient, path: &str, value: &str, kind: &str) -> Result<u64> {
@@ -1735,6 +1898,37 @@ mod tests {
                 format!("openproject {}\n", env!("CARGO_PKG_VERSION"))
             );
         }
+    }
+
+    #[test]
+    fn project_candidates_include_readme_and_manifest_names() {
+        let directory = env::temp_dir().join(format!(
+            "openproject-project-candidates-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("README.md"), "# Readme Project\n").unwrap();
+        fs::write(
+            directory.join("Cargo.toml"),
+            "[package]\nname = \"cargo-project\"\n",
+        )
+        .unwrap();
+        fs::write(directory.join("package.json"), r#"{"name":"node-project"}"#).unwrap();
+
+        let candidates = project_candidates(&directory);
+
+        assert!(candidates.iter().any(|value| value == "Readme Project"));
+        assert!(candidates.iter().any(|value| value == "cargo-project"));
+        assert!(candidates.iter().any(|value| value == "node-project"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn project_relevance_suggests_related_names_but_not_generic_words() {
+        assert!(project_relevance("customer-portal-app", "Customer Portal").is_some());
+        assert!(project_relevance("billing", "Billing Service").is_some());
+        assert!(project_relevance("api-client", "API Service").is_none());
     }
 
     #[test]
