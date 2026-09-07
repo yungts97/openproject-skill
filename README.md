@@ -84,9 +84,9 @@ Create an API token in OpenProject under **My account → Access token**. For a 
 openproject auth login
 ```
 
-The guided setup asks for your server URL (showing `https://openproject.example.com` as an example), reads the token without echoing it, validates the credentials, stores the host in global configuration, and saves the token securely. It uses Keychain on macOS, Credential Manager on Windows, and Secret Service on Linux; an existing initialized `pass` store is used only when the native store is unavailable.
+The guided setup reuses the host from project or global configuration when one is available, so it only asks for a server URL during first-time setup. Pass `--host URL` to use a different server. It validates the token before saving it and records the selected backend in global configuration. The CLI prefers the operating system credential manager where it is usable. In Linux, WSL, SSH, headless, and similar environments it uses a protected, user-only OpenProject credential file as the reliable fallback. `pass` is not used.
 
-If no secure store is available—for example, on a headless Linux machine without `pass`—use `OPENPROJECT_TOKEN` for the current session or automation. The CLI never writes a plaintext token file.
+Authenticate once in the environment where the coding agent runs. Windows and WSL are separate environments, so run `openproject auth login` inside WSL when the agent runs there.
 
 Linux or macOS:
 
@@ -104,7 +104,17 @@ $env:OPENPROJECT_TOKEN = "opapi-..."
 openproject auth verify
 ```
 
-`OPENPROJECT_TOKEN` overrides stored credentials, so it is suitable for CI and temporary sessions. Tokens are never accepted as command-line arguments or configuration-file values; do not commit them, include them in prompts, or place them in `.openproject.json`.
+For containers, CI, Docker/Kubernetes secrets, and remote agents, `OPENPROJECT_TOKEN_FILE` is also supported; trailing whitespace is ignored:
+
+```sh
+OPENPROJECT_TOKEN_FILE=/run/secrets/openproject-token openproject task 1234
+```
+
+`OPENPROJECT_TOKEN` overrides `OPENPROJECT_TOKEN_FILE`, which overrides saved credentials. Tokens are never accepted as command-line arguments or repository configuration values; do not commit them, include them in prompts, or place them in `.openproject.json`.
+
+### Saved login works in a terminal but fails in an agent
+
+Run `openproject auth status --json` in the agent environment to diagnose setup without exposing a token. If no credential exists, run `openproject auth login` once in that environment.
 
 ## Configuration
 
@@ -112,11 +122,12 @@ The CLI supports a global host setting and a repository-specific project mapping
 
 ### Global scope
 
-The global file accepts only `host`:
+The global file accepts `host` and the non-secret selected `credential_store`:
 
 ```json
 {
-  "host": "https://openproject.example.com"
+  "host": "https://openproject.example.com",
+  "credential_store": "file"
 }
 ```
 
@@ -155,8 +166,9 @@ The host is resolved in this order:
 The token is resolved in this order:
 
 1. `OPENPROJECT_TOKEN`
-2. The platform credential store
-3. An initialized `pass` store
+2. `OPENPROJECT_TOKEN_FILE`
+3. The configured persistent credential backend
+4. The safe file backend
 
 The project is resolved in this order:
 
@@ -184,6 +196,8 @@ Global options may be supplied before or after a subcommand.
 | Command | Purpose and important arguments |
 | --- | --- |
 | `auth login` | Interactively validate and save the host and token in a secure credential store |
+| `auth status` | Show credential availability and authentication status without exposing a token |
+| `auth logout` | Remove the saved credential while retaining the configured host |
 | `auth verify` | Validate the resolved URL and token by loading the current user |
 | `projects` | List all visible OpenProject projects |
 | `project [--project ID_OR_NAME]` | Resolve and display the project for the repository |

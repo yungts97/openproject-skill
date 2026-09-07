@@ -1224,6 +1224,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rpassword",
+ "serde",
  "serde_json",
  "url",
 ]

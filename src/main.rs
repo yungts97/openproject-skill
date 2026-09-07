@@ -5,14 +5,17 @@ use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use regex::Regex;
 use reqwest::blocking::{Client as HttpClient, RequestBuilder};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::{self, IsTerminal, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
 use url::Url;
 
 const API_ACCEPT: &str = "application/hal+json, application/json";
@@ -82,6 +85,10 @@ enum Commands {
 enum AuthCommands {
     /// Interactively verify and securely save an OpenProject API token.
     Login,
+    /// Show whether a credential is available and valid.
+    Status,
+    /// Remove the saved credential while keeping the configured host.
+    Logout,
     Verify,
 }
 
@@ -281,18 +288,45 @@ impl OpenProjectClient {
 struct Config {
     host: Option<String>,
     project: Option<String>,
+    credential_store: Option<CredentialStoreKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialStoreKind {
+    Native,
+    File,
+}
+
+impl CredentialStoreKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::File => "file",
+        }
+    }
 }
 
 fn global_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|path| path.join("openproject").join("config.json"))
 }
 
-fn write_global_host(host: &str) -> Result<()> {
+fn write_global_config(host: &str, credential_store: Option<CredentialStoreKind>) -> Result<()> {
     let path = global_config_path()
         .ok_or_else(|| anyhow!("cannot determine the global config directory"))?;
     let mut settings = read_config(&path)?;
-    validate_keys(&settings, &["host"], &path)?;
+    validate_keys(&settings, &["host", "credential_store"], &path)?;
     settings.insert("host".into(), Value::String(host.to_owned()));
+    match credential_store {
+        Some(kind) => {
+            settings.insert(
+                "credential_store".into(),
+                Value::String(kind.as_str().to_owned()),
+            );
+        }
+        None => {
+            settings.remove("credential_store");
+        }
+    }
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("global config path has no parent directory"))?;
@@ -301,6 +335,23 @@ fn write_global_host(host: &str) -> Result<()> {
     let contents = serde_json::to_string_pretty(&Value::Object(settings))?;
     fs::write(&path, format!("{contents}\n"))
         .with_context(|| format!("cannot write {}", path.display()))
+}
+
+fn credential_store_setting(
+    settings: &Map<String, Value>,
+    path: &Path,
+) -> Result<Option<CredentialStoreKind>> {
+    settings
+        .get("credential_store")
+        .map(|value| match value.as_str() {
+            Some("native") => Ok(CredentialStoreKind::Native),
+            Some("file") => Ok(CredentialStoreKind::File),
+            _ => bail!(
+                "credential_store in {} must be \"native\" or \"file\"",
+                path.display()
+            ),
+        })
+        .transpose()
 }
 
 fn project_config_path(cwd: &Path) -> PathBuf {
@@ -372,11 +423,12 @@ fn config_from_maps(
     project: &Map<String, Value>,
     project_path: &Path,
 ) -> Result<Config> {
-    validate_keys(global, &["host"], global_path)?;
+    validate_keys(global, &["host", "credential_store"], global_path)?;
     validate_keys(project, &["host", "project_id", "project"], project_path)?;
     Ok(Config {
         host: host_setting(project, project_path)?.or(host_setting(global, global_path)?),
         project: project_setting(project, project_path)?,
+        credential_store: credential_store_setting(global, global_path)?,
     })
 }
 
@@ -461,10 +513,16 @@ impl CredentialStore for NativeCredentialStore {
     }
 
     fn load(&self) -> Result<Option<String>> {
-        match self.entry()?.get_password() {
+        if !Self::available() {
+            bail!("system credential store is unavailable; check access to your desktop credential service from this session")
+        }
+        let entry = self
+            .entry()
+            .map_err(|_| anyhow!("cannot access the system credential store"))?;
+        match entry.get_password() {
             Ok(token) => Ok(Some(token)),
             Err(KeyringError::NoEntry) => Ok(None),
-            Err(error) => Err(anyhow!(error)).context("cannot read the stored OpenProject token"),
+            Err(_) => bail!("cannot read the stored OpenProject token; check that the system credential store is unlocked and accessible from this session"),
         }
     }
 
@@ -484,128 +542,183 @@ impl CredentialStore for NativeCredentialStore {
     }
 }
 
-struct PassCredentialStore {
-    entry: String,
+#[derive(Serialize, Deserialize, Default)]
+struct CredentialFile {
+    version: u8,
+    credentials: std::collections::BTreeMap<String, CredentialRecord>,
+}
+#[derive(Serialize, Deserialize)]
+struct CredentialRecord {
+    token: String,
 }
 
-impl PassCredentialStore {
-    fn new(scope: String) -> Self {
+struct FileCredentialStore {
+    host: String,
+    path: PathBuf,
+}
+impl FileCredentialStore {
+    fn new(host: &str) -> Result<Self> {
+        let path = dirs::config_dir()
+            .ok_or_else(|| anyhow!("cannot determine the OpenProject config directory"))?
+            .join("openproject")
+            .join("credentials.json");
+        Ok(Self {
+            host: canonical_host(host)?,
+            path,
+        })
+    }
+    #[cfg(test)]
+    fn at(host: &str, path: PathBuf) -> Self {
         Self {
-            entry: format!("{CREDENTIAL_SERVICE}/{scope}"),
+            host: canonical_host(host).unwrap(),
+            path,
         }
     }
-
-    fn available() -> bool {
-        Command::new("pass")
-            .arg("ls")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+    fn read(&self) -> Result<CredentialFile> {
+        match fs::read_to_string(&self.path) {
+            Ok(raw) => serde_json::from_str(&raw)
+                .map_err(|_| anyhow!("cannot read the OpenProject credential file")),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(CredentialFile {
+                version: 1,
+                ..Default::default()
+            }),
+            Err(_) => bail!("cannot read the OpenProject credential file"),
+        }
+    }
+    fn write(&self, value: &CredentialFile) -> Result<()> {
+        let directory = self
+            .path
+            .parent()
+            .ok_or_else(|| anyhow!("credential path has no directory"))?;
+        fs::create_dir_all(directory)
+            .context("cannot create the OpenProject credential directory")?;
+        #[cfg(unix)]
+        {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .context("cannot protect the OpenProject credential directory")?;
+        }
+        let temp = directory.join(format!(
+            ".credentials-{}-{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temp)
+            .context("cannot create protected temporary credential file")?;
+        let result = (|| -> Result<()> {
+            file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            fs::rename(&temp, &self.path)
+                .context("cannot atomically replace the OpenProject credential file")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result
     }
 }
-
-impl CredentialStore for PassCredentialStore {
+impl CredentialStore for FileCredentialStore {
     fn name(&self) -> &'static str {
-        "pass password store"
+        "protected credential file"
     }
-
     fn load(&self) -> Result<Option<String>> {
-        let output = Command::new("pass")
-            .arg("show")
-            .arg(&self.entry)
-            .stdin(Stdio::null())
-            .output()
-            .context("cannot run pass")?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let token = String::from_utf8(output.stdout)
-            .context("pass returned a token that is not valid UTF-8")?
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        Ok((!token.is_empty()).then_some(token))
+        Ok(self
+            .read()?
+            .credentials
+            .remove(&self.host)
+            .map(|record| record.token))
     }
-
     fn save(&self, token: &str) -> Result<()> {
-        let mut command = Command::new("pass");
-        command
-            .arg("insert")
-            .arg("--multiline")
-            .arg("--force")
-            .arg(&self.entry)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null());
-        let mut child = command.spawn().context("cannot run pass")?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("cannot write the token to pass"))?
-            .write_all(format!("{token}\n").as_bytes())
-            .context("cannot write the token to pass")?;
-        let status = child.wait().context("cannot wait for pass")?;
-        if !status.success() {
-            bail!("pass could not save the OpenProject token")
-        }
-        Ok(())
+        let mut file = self.read()?;
+        file.version = 1;
+        file.credentials.insert(
+            self.host.clone(),
+            CredentialRecord {
+                token: token.to_owned(),
+            },
+        );
+        self.write(&file)
     }
-
     fn delete(&self) -> Result<bool> {
-        if self.load()?.is_none() {
-            return Ok(false);
+        let mut file = self.read()?;
+        let existed = file.credentials.remove(&self.host).is_some();
+        if existed {
+            self.write(&file)?;
         }
-        let status = Command::new("pass")
-            .arg("rm")
-            .arg("--force")
-            .arg(&self.entry)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("cannot run pass")?;
-        if !status.success() {
-            bail!("pass could not remove the OpenProject token")
-        }
-        Ok(true)
+        Ok(existed)
     }
 }
 
-fn credential_stores(host: &str) -> Vec<Box<dyn CredentialStore>> {
-    let Ok(scope) = credential_scope(host) else {
-        return Vec::new();
+struct ResolvedCredential {
+    token: String,
+    source: &'static str,
+}
+fn store_for(kind: CredentialStoreKind, host: &str) -> Result<Box<dyn CredentialStore>> {
+    match kind {
+        CredentialStoreKind::Native => Ok(Box::new(NativeCredentialStore::new(credential_scope(
+            host,
+        )?))),
+        CredentialStoreKind::File => Ok(Box::new(FileCredentialStore::new(host)?)),
+    }
+}
+fn resolve_credential(host: &str, config: &Config) -> Result<ResolvedCredential> {
+    if let Ok(token) = env::var("OPENPROJECT_TOKEN") {
+        return Ok(ResolvedCredential {
+            token,
+            source: "environment",
+        });
+    }
+    if let Some(path) = env::var_os("OPENPROJECT_TOKEN_FILE") {
+        let token = fs::read_to_string(path)
+            .map_err(|_| anyhow!("OPENPROJECT_TOKEN_FILE could not be read"))?;
+        let token = token.trim().to_owned();
+        if token.is_empty() {
+            bail!("OPENPROJECT_TOKEN_FILE is empty");
+        }
+        return Ok(ResolvedCredential {
+            token,
+            source: "token_file",
+        });
+    }
+    let kinds: Vec<CredentialStoreKind> = match config.credential_store {
+        Some(CredentialStoreKind::Native) => {
+            vec![CredentialStoreKind::Native, CredentialStoreKind::File]
+        }
+        Some(CredentialStoreKind::File) => vec![CredentialStoreKind::File],
+        None => vec![CredentialStoreKind::Native, CredentialStoreKind::File],
     };
-    let mut stores: Vec<Box<dyn CredentialStore>> = Vec::new();
-    if NativeCredentialStore::available() {
-        stores.push(Box::new(NativeCredentialStore::new(scope.clone())));
+    let mut configured_error = None;
+    for kind in kinds {
+        match store_for(kind, host)?.load() {
+            Ok(Some(token)) => {
+                return Ok(ResolvedCredential {
+                    token,
+                    source: kind.as_str(),
+                })
+            }
+            Ok(None) => (),
+            Err(error) if config.credential_store == Some(kind) => configured_error = Some(error),
+            Err(_) => (),
+        }
     }
-    if PassCredentialStore::available() {
-        stores.push(Box::new(PassCredentialStore::new(scope)));
+    if configured_error.is_some() {
+        bail!("The configured system credential could not be read.\n\nRun:\n  openproject auth login\n\nor use OPENPROJECT_TOKEN / OPENPROJECT_TOKEN_FILE.");
     }
-    stores
+    bail!("No OpenProject credential found.\n\nRun:\n  openproject auth login\n\nFor CI or containers, set:\n  OPENPROJECT_TOKEN\nor:\n  OPENPROJECT_TOKEN_FILE")
 }
-
-fn first_stored_token(stores: &[Box<dyn CredentialStore>]) -> Option<String> {
-    stores.iter().find_map(|store| store.load().ok().flatten())
-}
-
-fn token_from_sources(
-    environment_token: Option<String>,
-    stores: &[Box<dyn CredentialStore>],
-) -> Option<String> {
-    environment_token.or_else(|| first_stored_token(stores))
-}
-
-fn resolve_token(host: &str) -> Result<String> {
-    token_from_sources(env::var("OPENPROJECT_TOKEN").ok(), &credential_stores(host)).ok_or_else(|| {
-        anyhow!(
-            "set OPENPROJECT_TOKEN for this session or run `openproject auth login` to save a token securely"
-        )
-    })
+fn resolve_token(host: &str, config: &Config) -> Result<String> {
+    Ok(resolve_credential(host, config)?.token)
 }
 
 fn require_interactive_terminal() -> Result<()> {
@@ -630,14 +743,14 @@ fn prompt_confirmation(label: &str) -> Result<bool> {
     Ok(response.is_empty() || matches!(response.as_str(), "y" | "Y" | "yes" | "YES"))
 }
 
-fn auth_login(cli: &Cli) -> Result<()> {
+fn auth_login(cli: &Cli, cfg: &Config) -> Result<()> {
     if cli.json {
         bail!("auth login cannot be used with --json")
     }
     require_interactive_terminal()?;
     println!("OpenProject CLI setup\n");
     println!("[1/3] OpenProject server");
-    let entered_host = match cli.host.as_deref() {
+    let entered_host = match cli.host.as_deref().or(cfg.host.as_deref()) {
         Some(host) => host.to_owned(),
         None => prompt(&format!("OpenProject URL (for example, {EXAMPLE_HOST}): "))?,
     };
@@ -649,14 +762,8 @@ fn auth_login(cli: &Cli) -> Result<()> {
         bail!("replace the example URL with your real OpenProject server")
     }
 
-    let stores = credential_stores(&host);
-    let Some(primary_store) = stores.first() else {
-        bail!(
-            "no secure credential store is available. Configure a system credential manager or initialized pass store, or set OPENPROJECT_TOKEN for this session"
-        )
-    };
-    println!("Credential storage: {}", primary_store.name());
-    if first_stored_token(&stores).is_some()
+    let existing = resolve_credential(&host, cfg).ok();
+    if existing.is_some()
         && !prompt_confirmation("A token is already saved for this server. Replace it? [y/N] ")?
     {
         println!("Setup cancelled; the existing token was kept.");
@@ -674,18 +781,70 @@ fn auth_login(cli: &Cli) -> Result<()> {
     let client = OpenProjectClient::new(host.clone(), token.clone())?;
     client.get("/users/me")?;
 
-    write_global_host(&host)?;
-    let mut saved_by = None;
-    for store in stores {
-        if store.save(&token).is_ok() {
-            saved_by = Some(store.name());
-            break;
+    let preferred = if env::var_os("WSL_DISTRO_NAME").is_some()
+        || (cfg!(target_os = "linux") && env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none())
+    {
+        CredentialStoreKind::File
+    } else {
+        CredentialStoreKind::Native
+    };
+    let mut saved = None;
+    for kind in [preferred, CredentialStoreKind::File] {
+        if saved.is_some() {
+            continue;
+        }
+        let store = store_for(kind, &host)?;
+        if store.save(&token).is_ok()
+            && store.load().ok().flatten().as_deref() == Some(token.as_str())
+        {
+            saved = Some((kind, store.name()));
         }
     }
-    let Some(saved_by) = saved_by else {
-        bail!("the token was verified but could not be saved securely; set OPENPROJECT_TOKEN for this session and retry auth login after fixing your credential store")
+    let Some((kind, saved_by)) = saved else {
+        bail!("the token was verified but could not be saved; retry auth login or use OPENPROJECT_TOKEN / OPENPROJECT_TOKEN_FILE")
     };
+    write_global_config(&host, Some(kind))?;
     println!("\nSetup complete. Host saved to global configuration; token saved in {saved_by}.");
+    Ok(())
+}
+
+fn auth_status(cli: &Cli, cfg: &Config, host: &str) -> Result<()> {
+    let credential = match resolve_credential(host, cfg) {
+        Ok(credential) => credential,
+        Err(_) => {
+            if cli.json {
+                emit(
+                    json!({"host":host,"authenticated":false,"credential_source":null,"user":null}),
+                    true,
+                );
+            } else {
+                println!("OpenProject authentication\n\nHost:       {host}\nCredential: unavailable\nStatus:     not authenticated");
+            }
+            return Ok(());
+        }
+    };
+    let client = OpenProjectClient::new(host.to_owned(), credential.token)?;
+    let user = client.get("/users/me");
+    let authenticated = user.is_ok();
+    let user = user.ok().map(|value| json!({"id":value.get("id"),"name":value.get("name").or_else(|| value.get("login"))}));
+    if cli.json {
+        emit(
+            json!({"host":host,"authenticated":authenticated,"credential_source":credential.source,"user":user}),
+            true,
+        );
+        return Ok(());
+    }
+    println!("OpenProject authentication\n\nHost:       {host}\nCredential: available\nStorage:    {}\nStatus:     {}", credential.source.replace('_', " "), if authenticated { "authenticated" } else { "authentication failed" });
+    Ok(())
+}
+
+fn auth_logout(cli: &Cli, cfg: &Config, host: &str) -> Result<()> {
+    let kind = cfg
+        .credential_store
+        .ok_or_else(|| anyhow!("no persistent credential store is configured"))?;
+    let removed = store_for(kind, host)?.delete()?;
+    write_global_config(host, None)?;
+    emit(json!({"host":host,"credentialRemoved":removed}), cli.json);
     Ok(())
 }
 
@@ -986,7 +1145,7 @@ fn purge_plan(cli: &Cli) -> Result<PurgePlan> {
     let environment_host = env::var("OPENPROJECT_URL").ok();
     let configured_host = if cli.host.is_none() && environment_host.is_none() {
         let settings = read_config(&config_path)?;
-        validate_keys(&settings, &["host"], &config_path)?;
+        validate_keys(&settings, &["host", "credential_store"], &config_path)?;
         host_setting(&settings, &config_path)?
     } else {
         None
@@ -1009,8 +1168,11 @@ fn purge_plan(cli: &Cli) -> Result<PurgePlan> {
 fn remove_global_config(plan: &PurgePlan) -> Result<Value> {
     let mut removed_credentials = Vec::new();
     if let Some(host) = &plan.credential_host {
-        for store in credential_stores(host) {
-            if store.delete()? {
+        for kind in [CredentialStoreKind::Native, CredentialStoreKind::File] {
+            let Ok(store) = store_for(kind, host) else {
+                continue;
+            };
+            if store.delete().unwrap_or(false) {
                 removed_credentials.push(store.name());
             }
         }
@@ -1309,11 +1471,24 @@ fn run(cli: &Cli) -> Result<()> {
         command: AuthCommands::Login,
     } = &cli.command
     {
-        return auth_login(cli);
+        let cfg = config(&cli.cwd)?;
+        return auth_login(cli, &cfg);
     }
     let cfg = config(&cli.cwd)?;
     let host = resolve_host(cli.host.as_deref(), env::var("OPENPROJECT_URL").ok(), &cfg)?;
-    let token = resolve_token(&host)?;
+    if let Commands::Auth {
+        command: AuthCommands::Status,
+    } = &cli.command
+    {
+        return auth_status(cli, &cfg, &host);
+    }
+    if let Commands::Auth {
+        command: AuthCommands::Logout,
+    } = &cli.command
+    {
+        return auth_logout(cli, &cfg, &host);
+    }
+    let token = resolve_token(&host, &cfg)?;
     let client = OpenProjectClient::new(host, token)?;
     match &cli.command {
         Commands::Auth {
@@ -1474,6 +1649,9 @@ fn run(cli: &Cli) -> Result<()> {
         Commands::Auth {
             command: AuthCommands::Login,
         }
+        | Commands::Auth {
+            command: AuthCommands::Status | AuthCommands::Logout,
+        }
         | Commands::CommitLink(_)
         | Commands::Upgrade(_)
         | Commands::Uninstall(_) => unreachable!(),
@@ -1594,7 +1772,8 @@ mod tests {
             config,
             Config {
                 host: Some("https://project.example.com".into()),
-                project: Some("13".into())
+                project: Some("13".into()),
+                credential_store: None,
             }
         );
     }
@@ -1631,6 +1810,7 @@ mod tests {
         let config = Config {
             host: Some("https://config.example.com".into()),
             project: None,
+            credential_store: None,
         };
         assert_eq!(
             resolve_host(
@@ -1656,6 +1836,7 @@ mod tests {
         let config = Config {
             host: Some("not a URL".into()),
             project: None,
+            credential_store: None,
         };
 
         let error = resolve_host(None, None, &config).unwrap_err();
@@ -1698,14 +1879,52 @@ mod tests {
     }
 
     #[test]
-    fn environment_token_overrides_stored_token() {
-        let store = MemoryCredentialStore::empty();
-        store.save("stored-token").unwrap();
-        let stores: Vec<Box<dyn CredentialStore>> = vec![Box::new(store)];
-        assert_eq!(
-            token_from_sources(Some("environment-token".into()), &stores).as_deref(),
-            Some("environment-token")
-        );
+    fn file_credentials_are_host_scoped_and_replaceable() {
+        let directory =
+            env::temp_dir().join(format!("openproject-credentials-{}", std::process::id()));
+        let path = directory.join("credentials.json");
+        let one = FileCredentialStore::at("https://one.example.com", path.clone());
+        let two = FileCredentialStore::at("https://two.example.com", path.clone());
+        one.save("one").unwrap();
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        two.save("two").unwrap();
+        one.save("new-one").unwrap();
+        assert_eq!(one.load().unwrap().as_deref(), Some("new-one"));
+        assert_eq!(two.load().unwrap().as_deref(), Some("two"));
+        assert!(one.delete().unwrap());
+        assert!(one.load().unwrap().is_none());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn config_accepts_the_selected_store_but_project_config_cannot_set_it() {
+        let global = object(json!({"host":"https://example.com","credential_store":"file"}));
+        let config = config_from_maps(
+            &global,
+            Path::new("global.json"),
+            &Map::new(),
+            Path::new(".openproject.json"),
+        )
+        .unwrap();
+        assert_eq!(config.credential_store, Some(CredentialStoreKind::File));
+        let project = object(json!({"credential_store":"file"}));
+        assert!(config_from_maps(
+            &Map::new(),
+            Path::new("global.json"),
+            &project,
+            Path::new(".openproject.json")
+        )
+        .is_err());
     }
 
     #[test]

@@ -19,9 +19,9 @@ The public skill source is the repository root of `yungts97/openproject-skill`. 
 
 Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it. Use `openproject uninstall --purge` only when the user explicitly requests complete local cleanup: it removes global configuration and the stored credential for the configured host, but always preserves repository `.openproject.json` files and the separately installed Agent Skill. If global configuration is missing or invalid, pass `--host` to identify the credential to remove.
 
-The user supplies their own OpenProject URL and API token. Do not ask them to paste a token into chat, print it, place it in command arguments, or write it to a configuration file. For an interactive local terminal, direct them to run `openproject auth login`; it validates the token and stores it in the system credential manager, or an existing initialized `pass` store when the system manager is unavailable.
+Authentication is persistent. Never ask the user to paste a token into chat, print it, place it in command arguments, or write it to repository configuration. If authentication fails, run `openproject auth status --json`. If no credential exists, tell the user: `Run openproject auth login once in this environment.` The CLI uses a system credential manager where suitable and a protected credential file fallback for agent, WSL, SSH, headless, and container-friendly environments.
 
-For agents, CI, headless machines, and temporary sessions, direct them to set the token in their environment:
+For CI, headless machines, and temporary sessions without accessible saved credentials, the user can supply a token through the process environment:
 
 ```bash
 export OPENPROJECT_TOKEN="opapi-..."
@@ -44,7 +44,17 @@ Project configuration is `.openproject.json` at the Git root and may set `host` 
 {"host":"https://openproject.example.com","project_id":13}
 ```
 
-Read repository guidance before external writes. Use an explicit `--project` when guidance supplies one. Otherwise the CLI uses project configuration, then an exact repository-name match. If resolution is missing or ambiguous, stop and ask the user; never select a project speculatively.
+### Current-directory project detection
+
+At the start of work that needs a project, resolve the project for the current working directory. First run `openproject project --cwd . --json` (or use the repository root as `--cwd` when it is known). This uses the repository's `.openproject.json` when present, so the configured `project_id` becomes the default for every later OpenProject command run from that repository.
+
+If no project configuration exists, let the CLI attempt its exact normalized match between the repository directory name and an OpenProject project name or identifier. If necessary, inspect `openproject projects --json` and consider only one exact normalized name or identifier match; never use a fuzzy or speculative match.
+
+When an exact project ID is found but `.openproject.json` does not set `project_id`, tell the user which project and ID were found and offer to add it to the repository configuration. Do not create or modify `.openproject.json` until the user explicitly confirms. After confirmation, preserve an existing `host` and other supported settings, add `project_id`, and use that configured project by default. Treat this configuration change separately from OpenProject API writes.
+
+If the match is missing or ambiguous, show the viable candidates and ask the user to choose a project; do not write configuration or select a default until they confirm.
+
+Read repository guidance before external writes. Use an explicit `--project` when guidance supplies one; it overrides the directory default for that command.
 
 ## Agent-friendly operation
 
