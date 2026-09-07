@@ -16,6 +16,8 @@ use std::io::{self, IsTerminal, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+#[cfg(windows)]
+use std::process::Stdio;
 use url::Url;
 
 const API_ACCEPT: &str = "application/hal+json, application/json";
