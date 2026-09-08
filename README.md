@@ -199,12 +199,15 @@ Global options may be supplied before or after a subcommand.
 | `auth status` | Show credential availability and authentication status without exposing a token |
 | `auth logout` | Remove the saved credential while retaining the configured host |
 | `auth verify` | Validate the resolved URL and token by loading the current user |
-| `projects` | List all visible OpenProject projects |
-| `project [--project ID_OR_NAME]` | Resolve and display the project for the repository |
-| `tasks [--project ID_OR_NAME] [--all] [--assignee ID_OR_ME] [--query TEXT]` | List project work packages; closed items are hidden unless `--all` is used |
-| `task TASK_ID` | Show a work-package summary |
+| `projects [--limit N] [--offset N]` | List one page of visible OpenProject projects |
+| `project [--project ID_OR_NAME] [--bind]` | Resolve and display the project; `--bind` explicitly saves its numeric ID to the repository configuration |
+| `tasks [--project ID_OR_NAME] [--all] [--assignee ID_OR_ME] [--query TEXT] [--limit N] [--offset N]` | List one server-filtered page of project work packages; closed items are hidden unless `--all` is used |
+| `task TASK_ID [--full]` | Show a compact work-package summary, or its complete API representation with `--full` |
+| `activities TASK_ID [--limit N] [--offset N]` | List a work package's activity/history entries with complete activity details |
+| `activity ACTIVITY_ID` | Show one activity with its comment and change details |
+| `relations TASK_ID [--limit N] [--offset N]` | List ordinary relations in which a work package is involved, plus its parent/child hierarchy links |
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type/type ID, assignee, dates, and estimate |
-| `update TASK_ID [OPTIONS]` | Update subject, description, status, assignee, percent complete, dates, or estimate |
+| `update TASK_ID [OPTIONS]` | Update subject, description, status, assignee, percent complete, dates, or estimate; deliberate `--clear-*` flags remove nullable values |
 | `comment TASK_ID --message TEXT` | Add an activity comment |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
@@ -220,10 +223,14 @@ Examples:
 ```sh
 openproject projects --json
 openproject project --project 13 --json
-openproject tasks --project 13 --assignee me --query approval --json
-openproject task 123 --json
+openproject project --project 13 --bind --json
+openproject tasks --project 13 --assignee me --query approval --limit 50 --offset 1 --json
+openproject task 123 --full --json
+openproject activities 123 --limit 50 --json
+openproject activity 456 --json
+openproject relations 123 --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
-openproject update 123 --status "In progress" --percent 40 --dry-run --json
+openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
 openproject commit-link HEAD --format url
@@ -240,6 +247,10 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - Successful commands exit with code `0`. Runtime failures exit with code `1`; argument errors use Clap's non-zero exit behavior.
 - With `--json`, runtime failures are written to stderr as `{"error":{"message":"..."}}`.
 - Use `--dry-run --json` to inspect write requests before submitting them.
+- Collection commands return one page by default. Use `--limit` and `--offset`; task-list output includes `next`, `total`, and page metadata.
+- `tasks` sends status, assignee, and subject filtering to OpenProject instead of downloading and filtering every work package locally.
+- `--clear-description`, `--clear-assignee`, `--clear-start-date`, `--clear-due-date`, and `--clear-estimate` intentionally send a null value. A clear option cannot be combined with its corresponding value option.
+- `project --bind` is an explicit local write to `.openproject.json`; agents must still obtain the repository-binding approval described in the Agent Skill. Its `--dry-run` output previews the target file and resolved ID without writing.
 - `--version`, `--help`, `commit-link`, `upgrade`, and `uninstall` do not require OpenProject credentials.
 - Treat `create`, `update`, `comment`, and `log-time` as external writes and run them only after the user authorizes the specific action.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.

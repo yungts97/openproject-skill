@@ -72,10 +72,14 @@ Read repository guidance before external writes. Use an explicit `--project` whe
 openproject auth login
 openproject projects --json
 openproject project --project 13 --json
-openproject tasks --project 13 --assignee me --query approval --json
-openproject task 123 --json
+openproject project --project 13 --bind --json
+openproject tasks --project 13 --assignee me --query approval --limit 50 --offset 1 --json
+openproject task 123 --full --json
+openproject activities 123 --limit 50 --json
+openproject activity 456 --json
+openproject relations 123 --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
-openproject update 123 --status "In progress" --percent 40 --dry-run --json
+openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
 openproject commit-link HEAD --format url
@@ -90,6 +94,11 @@ openproject uninstall --purge --dry-run --json
 - Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
 - Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
+- `tasks`, `projects`, `activities`, and `relations` are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
+- `activities` expands every entry to its full activity resource; use `activity ACTIVITY_ID` to retrieve a single entry directly. `relations TASK_ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links when present.
+- `task --full` returns the complete OpenProject representation; the default is a compact, agent-friendly summary.
+- Clear mutable values only with the deliberate `update --clear-description`, `--clear-assignee`, `--clear-start-date`, `--clear-due-date`, or `--clear-estimate` options. Do not combine a value with its corresponding clear option.
+- `project --bind` writes the resolved numeric ID to `.openproject.json`. It is a local configuration write and still requires the user's explicit persistence approval; use `--dry-run` to preview its path and ID.
 - Send relationship values through `_links` with `href`.
 - Do not expose authorization headers, tokens, or secrets in output.
 - If a comment or description includes a Git commit, use `openproject commit-link` to generate a clickable link when the remote can be safely resolved.

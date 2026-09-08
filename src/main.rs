@@ -56,13 +56,19 @@ enum Commands {
         command: AuthCommands,
     },
     /// List visible OpenProject projects.
-    Projects,
+    Projects(PageArgs),
     /// Resolve the project for this repository.
     Project(ProjectArg),
     /// List work packages in a project.
     Tasks(TasksArgs),
     /// Show one work package.
-    Task { task_id: u64 },
+    Task(TaskArgs),
+    /// List activity entries for a work package.
+    Activities(ActivityArgs),
+    /// Show one activity with its comment and change details.
+    Activity(ActivityIdArgs),
+    /// List relations for a work package.
+    Relations(ActivityArgs),
     /// Create a work package.
     Create(CreateArgs),
     /// Update a work package.
@@ -98,6 +104,9 @@ enum AuthCommands {
 struct ProjectArg {
     #[arg(long)]
     project: Option<String>,
+    /// Persist the resolved project ID in the repository .openproject.json file.
+    #[arg(long)]
+    bind: bool,
 }
 
 #[derive(Args, Debug)]
@@ -110,6 +119,38 @@ struct TasksArgs {
     assignee: Option<String>,
     #[arg(long)]
     query: Option<String>,
+    #[command(flatten)]
+    page: PageArgs,
+}
+
+#[derive(Args, Debug)]
+struct PageArgs {
+    /// Maximum records to return (1-1000).
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=1000))]
+    limit: u32,
+    /// One-based result-page offset.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    offset: u32,
+}
+
+#[derive(Args, Debug)]
+struct TaskArgs {
+    task_id: u64,
+    /// Return the complete API representation instead of a compact summary.
+    #[arg(long)]
+    full: bool,
+}
+
+#[derive(Args, Debug)]
+struct ActivityArgs {
+    task_id: u64,
+    #[command(flatten)]
+    page: PageArgs,
+}
+
+#[derive(Args, Debug)]
+struct ActivityIdArgs {
+    activity_id: u64,
 }
 
 #[derive(Args, Debug)]
@@ -167,6 +208,21 @@ struct UpdateArgs {
     due_date: Option<String>,
     #[arg(long)]
     estimate: Option<String>,
+    /// Clear the work package description.
+    #[arg(long)]
+    clear_description: bool,
+    /// Remove the assignee.
+    #[arg(long)]
+    clear_assignee: bool,
+    /// Clear the start date.
+    #[arg(long)]
+    clear_start_date: bool,
+    /// Clear the due date.
+    #[arg(long)]
+    clear_due_date: bool,
+    /// Clear the estimated time.
+    #[arg(long)]
+    clear_estimate: bool,
 }
 
 #[derive(Args, Debug)]
@@ -230,17 +286,46 @@ impl OpenProjectClient {
     }
     fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
         let url = self.url(path)?;
-        let mut request: RequestBuilder = self
-            .http
-            .request(method, url)
-            .header(ACCEPT, API_ACCEPT)
-            .header(AUTHORIZATION, format!("Bearer {}", self.token));
-        if let Some(payload) = body {
-            request = request
-                .header(CONTENT_TYPE, "application/json")
-                .json(&payload);
-        }
-        let response = request.send().context("cannot connect to OpenProject")?;
+        let retries = if method == reqwest::Method::GET { 2 } else { 0 };
+        let mut attempt = 0;
+        let response = loop {
+            let mut request: RequestBuilder = self
+                .http
+                .request(method.clone(), &url)
+                .header(ACCEPT, API_ACCEPT)
+                .header(AUTHORIZATION, format!("Bearer {}", self.token));
+            if let Some(payload) = &body {
+                request = request
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(payload);
+            }
+            match request.send() {
+                Ok(response)
+                    if attempt < retries
+                        && (response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || response.status().is_server_error()) =>
+                {
+                    let wait = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(1)
+                        .min(10);
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    attempt += 1;
+                }
+                Ok(response) => break response,
+                Err(error) if attempt < retries => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(attempt));
+                    if attempt > retries {
+                        return Err(error).context("cannot connect to OpenProject");
+                    }
+                }
+                Err(error) => return Err(error).context("cannot connect to OpenProject"),
+            }
+        };
         let status = response.status();
         let text = response.text().unwrap_or_default();
         if !status.is_success() {
@@ -283,6 +368,14 @@ impl OpenProjectClient {
             }
         }
         Ok(items)
+    }
+    fn page(&self, path: &str, page: &PageArgs) -> Result<Value> {
+        let query = format!("pageSize={}&offset={}", page.limit, page.offset);
+        self.get(&format!(
+            "{path}{}{}",
+            if path.contains('?') { "&" } else { "?" },
+            query
+        ))
     }
 }
 
@@ -360,6 +453,33 @@ fn project_config_path(cwd: &Path) -> PathBuf {
     git_root(cwd)
         .unwrap_or_else(|| cwd.to_path_buf())
         .join(".openproject.json")
+}
+
+fn bind_project(cwd: &Path, project_id: u64) -> Result<PathBuf> {
+    let path = project_config_path(cwd);
+    let mut settings = read_config(&path)?;
+    validate_keys(&settings, &["host", "project_id", "project"], &path)?;
+    settings.insert("project_id".into(), Value::Number(project_id.into()));
+    settings.remove("project");
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("project config path has no parent directory"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("cannot create repository directory {}", parent.display()))?;
+    let temporary = parent.join(format!(".openproject-{}.tmp", std::process::id()));
+    let result = fs::write(
+        &temporary,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&Value::Object(settings))?
+        ),
+    )
+    .and_then(|_| fs::rename(&temporary, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(path)
 }
 
 fn read_config(path: &Path) -> Result<Map<String, Value>> {
@@ -1065,11 +1185,11 @@ fn resolve_project(
     let value = explicit
         .map(str::to_owned)
         .or_else(|| settings.project.clone());
-    let projects = client.collection("/projects")?;
     if let Some(value) = value {
         if let Ok(number) = value.parse::<u64>() {
             return client.get(&format!("/projects/{number}"));
         }
+        let projects = client.collection("/projects")?;
         let normalized_value = normalize(&value);
         let matches: Vec<_> = projects
             .into_iter()
@@ -1087,6 +1207,7 @@ fn resolve_project(
             _ => bail!("multiple OpenProject projects match {value:?}; use a numeric --project"),
         };
     }
+    let projects = client.collection("/projects")?;
     let candidates = project_candidates(cwd);
     let normalized_candidates: HashSet<_> = candidates
         .iter()
@@ -1171,26 +1292,204 @@ fn task_summary(task: &Value, host: &str) -> Value {
     let task_id = task.get("id").and_then(Value::as_u64);
     json!({"id":task_id,"subject":task.get("subject"),"status":title(task,"status"),"type":title(task,"type"),"assignee":title(task,"assignee"),"percentageDone":task.get("percentageDone"),"spentTime":task.get("spentTime"),"startDate":task.get("startDate"),"dueDate":task.get("dueDate"),"url":task_id.map(|n|format!("{host}/work_packages/{n}"))})
 }
+
+fn page_elements(page: &Value, host: &str) -> Value {
+    let items = page
+        .pointer("/_embedded/elements")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|item| task_summary(item, host))
+        .collect::<Vec<_>>();
+    json!({
+        "items": items,
+        "total": page.get("total"),
+        "count": page.get("count"),
+        "offset": page.get("offset"),
+        "pageSize": page.get("pageSize"),
+        "next": page.pointer("/_links/nextByOffset/href").and_then(Value::as_str),
+    })
+}
+
+fn activity_page(client: &OpenProjectClient, args: &ActivityArgs) -> Result<Value> {
+    let mut page = client.page(
+        &format!("/work_packages/{}/activities", args.task_id),
+        &args.page,
+    )?;
+    let activity_entries = page
+        .pointer("/_embedded/elements")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    let server_paginates = page.get("pageSize").is_some();
+    let total = activity_entries.len();
+    let start = if server_paginates {
+        0
+    } else {
+        (args.page.offset.saturating_sub(1) * args.page.limit) as usize
+    };
+    let selected = activity_entries
+        .into_iter()
+        .skip(start)
+        .take(args.page.limit as usize)
+        .collect::<Vec<_>>();
+    let details = selected
+        .into_iter()
+        .map(|activity| client.get(&format!("/activities/{}", id(&activity)?)))
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(elements) = page
+        .pointer_mut("/_embedded/elements")
+        .and_then(Value::as_array_mut)
+    {
+        *elements = details;
+    }
+    if !server_paginates {
+        let count = page
+            .pointer("/_embedded/elements")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let page_object = page
+            .as_object_mut()
+            .expect("OpenProject activity collection response is an object");
+        page_object.insert("total".into(), json!(total));
+        page_object.insert("count".into(), json!(count));
+        page_object.insert("offset".into(), json!(args.page.offset));
+        page_object.insert("pageSize".into(), json!(args.page.limit));
+    }
+    Ok(page)
+}
+
+fn relation_path(task_id: u64) -> Result<String> {
+    let filters = json!([{"involved":{"operator":"=","values":[task_id]}}]);
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("filters", &serde_json::to_string(&filters)?);
+    Ok(format!("/relations?{}", serializer.finish()))
+}
+
+fn hierarchy_relations(task: &Value) -> Vec<Value> {
+    let Some(work_package) = task.pointer("/_links/self").cloned() else {
+        return Vec::new();
+    };
+    let mut relations = Vec::new();
+    if let Some(parent) = task.pointer("/_links/parent").filter(|link| {
+        link.get("href")
+            .and_then(Value::as_str)
+            .is_some_and(|href| !href.is_empty())
+    }) {
+        relations.push(json!({
+            "_type": "HierarchyRelation",
+            "name": "part of",
+            "type": "partof",
+            "reverseType": "includes",
+            "_links": {"from": work_package, "to": parent}
+        }));
+    }
+    for child in task
+        .pointer("/_links/children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        relations.push(json!({
+            "_type": "HierarchyRelation",
+            "name": "includes",
+            "type": "includes",
+            "reverseType": "partof",
+            "_links": {"from": work_package, "to": child}
+        }));
+    }
+    relations
+}
+
+fn relation_page(client: &OpenProjectClient, args: &ActivityArgs) -> Result<Value> {
+    let mut page = client.page(&relation_path(args.task_id)?, &args.page)?;
+    let hierarchy = hierarchy_relations(&client.get(&format!("/work_packages/{}", args.task_id))?);
+    if !hierarchy.is_empty() {
+        page.as_object_mut()
+            .expect("OpenProject collection response is an object")
+            .insert("hierarchy".into(), Value::Array(hierarchy));
+    }
+    Ok(page)
+}
+
+fn work_package_path(project_id: u64, args: &TasksArgs, assignee: Option<u64>) -> Result<String> {
+    let mut filters = Vec::new();
+    if !args.all {
+        filters.push(json!({"status":{"operator":"o","values":[]}}));
+    }
+    if let Some(assignee) = assignee {
+        filters.push(json!({"assignee":{"operator":"=","values":[assignee]}}));
+    }
+    if let Some(query) = &args.query {
+        filters.push(json!({"subject":{"operator":"~","values":[query]}}));
+    }
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if !filters.is_empty() {
+        serializer.append_pair("filters", &serde_json::to_string(&filters)?);
+    }
+    let query = serializer.finish();
+    Ok(if query.is_empty() {
+        format!("/projects/{project_id}/work_packages")
+    } else {
+        format!("/projects/{project_id}/work_packages?{query}")
+    })
+}
+fn item_label(item: &Value) -> Option<&str> {
+    item.get("subject")
+        .or_else(|| item.get("name"))
+        .or_else(|| item.get("title"))
+        .or_else(|| item.pointer("/_links/self/title"))
+        .or_else(|| item.pointer("/comment/raw"))
+        .and_then(Value::as_str)
+}
+
+fn emit_items(items: &[Value]) {
+    for item in items {
+        let id = item.get("id").and_then(Value::as_u64);
+        let label = item_label(item).unwrap_or("(untitled)");
+        match id {
+            Some(id) => println!("#{id} {label}"),
+            None => println!("{label}"),
+        }
+    }
+}
+
 fn emit(value: Value, as_json: bool) {
     if as_json {
         println!("{}", serde_json::to_string_pretty(&value).unwrap());
-    } else if let Some(items) = value.as_array() {
-        for item in items {
-            println!(
-                "#{} {}",
-                item.get("id")
-                    .and_then(Value::as_u64)
-                    .map(|n| n.to_string())
-                    .unwrap_or_default(),
-                item.get("subject")
-                    .or_else(|| item.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            );
-        }
-    } else {
-        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        return;
     }
+    if let Some(items) = value.as_array() {
+        emit_items(items);
+        return;
+    }
+    if let Some(items) = value.get("items").and_then(Value::as_array) {
+        emit_items(items);
+        if let Some(next) = value.get("next").and_then(Value::as_str) {
+            println!("More results: {next}");
+        }
+        return;
+    }
+    if let Some(items) = value
+        .pointer("/_embedded/elements")
+        .and_then(Value::as_array)
+    {
+        emit_items(items);
+        if let Some(next) = value
+            .pointer("/_links/nextByOffset/href")
+            .and_then(Value::as_str)
+        {
+            println!("More results: {next}");
+        }
+        return;
+    }
+    if item_label(&value).is_some() {
+        emit_items(std::slice::from_ref(&value));
+        return;
+    }
+    println!("{}", serde_json::to_string_pretty(&value).unwrap());
 }
 fn compact(value: Value) -> Value {
     match value {
@@ -1223,6 +1522,20 @@ fn write(
     body: Value,
 ) -> Result<Value> {
     let body = compact(body);
+    if cli.dry_run {
+        Ok(json!({"dryRun":true,"method":method.as_str(),"path":path,"payload":body}))
+    } else {
+        client.request(method, path, Some(body))
+    }
+}
+
+fn write_exact(
+    client: &OpenProjectClient,
+    cli: &Cli,
+    method: reqwest::Method,
+    path: &str,
+    body: Value,
+) -> Result<Value> {
     if cli.dry_run {
         Ok(json!({"dryRun":true,"method":method.as_str(),"path":path,"payload":body}))
     } else {
@@ -1757,60 +2070,55 @@ fn run(cli: &Cli) -> Result<()> {
         Commands::Auth {
             command: AuthCommands::Verify,
         } => emit(client.get("/users/me")?, cli.json),
-        Commands::Projects => emit(Value::Array(client.collection("/projects")?), cli.json),
-        Commands::Project(args) => emit(
-            resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?,
-            cli.json,
-        ),
+        Commands::Projects(page) => emit(client.page("/projects", page)?, cli.json),
+        Commands::Project(args) => {
+            let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
+            if args.bind {
+                let path = project_config_path(&cli.cwd);
+                if cli.dry_run {
+                    emit(
+                        json!({"dryRun":true, "project": project, "bind": path, "projectId": id(&project)?}),
+                        cli.json,
+                    );
+                } else {
+                    let path = bind_project(&cli.cwd, id(&project)?)?;
+                    emit(json!({"project": project, "bound": path}), cli.json);
+                }
+            } else {
+                emit(project, cli.json);
+            }
+        }
         Commands::Tasks(args) => {
             let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
             let project_id = id(&project)?;
-            let mut tasks = client.collection(&format!("/projects/{project_id}/work_packages"))?;
-            if let Some(query) = &args.query {
-                tasks.retain(|t| {
-                    t.get("subject")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_ascii_lowercase().contains(&query.to_ascii_lowercase()))
-                        .unwrap_or(false)
-                });
-            }
-            if let Some(assignee) = &args.assignee {
-                let wanted = resolve_user(&client, assignee)?;
-                let expected = format!("/api/v3/users/{wanted}");
-                tasks.retain(|t| href(t, "assignee") == Some(expected.as_str()));
-            }
-            if !args.all {
-                let closed: HashSet<u64> = client
-                    .collection("/statuses")?
-                    .iter()
-                    .filter(|s| s.get("isClosed").and_then(Value::as_bool) == Some(true))
-                    .filter_map(|s| s.get("id").and_then(Value::as_u64))
-                    .collect();
-                tasks.retain(|t| {
-                    href(t, "status")
-                        .and_then(|h| h.rsplit('/').next())
-                        .and_then(|n| n.parse().ok())
-                        .map(|n| !closed.contains(&n))
-                        .unwrap_or(true)
-                });
-            }
+            let assignee = args
+                .assignee
+                .as_deref()
+                .map(|value| resolve_user(&client, value))
+                .transpose()?;
+            let path = work_package_path(project_id, args, assignee)?;
             emit(
-                Value::Array(
-                    tasks
-                        .iter()
-                        .map(|t| task_summary(t, &client.host))
-                        .collect(),
-                ),
+                page_elements(&client.page(&path, &args.page)?, &client.host),
                 cli.json,
             );
         }
-        Commands::Task { task_id } => emit(
-            task_summary(
-                &client.get(&format!("/work_packages/{task_id}"))?,
-                &client.host,
-            ),
+        Commands::Task(args) => {
+            let task = client.get(&format!("/work_packages/{}", args.task_id))?;
+            emit(
+                if args.full {
+                    task
+                } else {
+                    task_summary(&task, &client.host)
+                },
+                cli.json,
+            );
+        }
+        Commands::Activities(args) => emit(activity_page(&client, args)?, cli.json),
+        Commands::Activity(args) => emit(
+            client.get(&format!("/activities/{}", args.activity_id))?,
             cli.json,
         ),
+        Commands::Relations(args) => emit(relation_page(&client, args)?, cli.json),
         Commands::Create(args) => {
             let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
             let type_id =
@@ -1853,8 +2161,21 @@ fn run(cli: &Cli) -> Result<()> {
                 && args.start_date.is_none()
                 && args.due_date.is_none()
                 && args.estimate.is_none()
+                && !args.clear_description
+                && !args.clear_assignee
+                && !args.clear_start_date
+                && !args.clear_due_date
+                && !args.clear_estimate
             {
                 bail!("no update fields were supplied");
+            }
+            if args.assignee.is_some() && args.clear_assignee
+                || args.description.is_some() && args.clear_description
+                || args.start_date.is_some() && args.clear_start_date
+                || args.due_date.is_some() && args.clear_due_date
+                || args.estimate.is_some() && args.clear_estimate
+            {
+                bail!("a value and its corresponding --clear-* option cannot be used together");
             }
             let mut links = Map::new();
             if let Some(n) = status {
@@ -1869,14 +2190,55 @@ fn run(cli: &Cli) -> Result<()> {
                     json!({"href":format!("/api/v3/users/{n}")}),
                 );
             }
-            let payload = json!({"lockVersion":current.get("lockVersion"),"subject":args.subject,"description":args.description.as_ref().map(|raw|json!({"format":"markdown","raw":raw})),"percentageDone":args.percent,"startDate":args.start_date,"dueDate":args.due_date,"estimatedTime":args.estimate.as_deref().map(duration).transpose()?,"_links":links});
+            if args.clear_assignee {
+                links.insert("assignee".into(), Value::Null);
+            }
+            let mut payload = Map::new();
+            payload.insert(
+                "lockVersion".into(),
+                current.get("lockVersion").cloned().unwrap_or(Value::Null),
+            );
+            payload.insert("_links".into(), Value::Object(links));
+            if let Some(subject) = &args.subject {
+                payload.insert("subject".into(), Value::String(subject.clone()));
+            }
+            if let Some(description) = &args.description {
+                payload.insert(
+                    "description".into(),
+                    json!({"format":"markdown","raw":description}),
+                );
+            }
+            if args.clear_description {
+                payload.insert("description".into(), Value::Null);
+            }
+            if let Some(percent) = args.percent {
+                payload.insert("percentageDone".into(), json!(percent));
+            }
+            if let Some(start_date) = &args.start_date {
+                payload.insert("startDate".into(), json!(start_date));
+            }
+            if args.clear_start_date {
+                payload.insert("startDate".into(), Value::Null);
+            }
+            if let Some(due_date) = &args.due_date {
+                payload.insert("dueDate".into(), json!(due_date));
+            }
+            if args.clear_due_date {
+                payload.insert("dueDate".into(), Value::Null);
+            }
+            if let Some(estimate) = &args.estimate {
+                payload.insert("estimatedTime".into(), json!(duration(estimate)?));
+            }
+            if args.clear_estimate {
+                payload.insert("estimatedTime".into(), Value::Null);
+            }
             emit(
-                write(
+                write_exact(
                     &client,
                     cli,
                     reqwest::Method::PATCH,
                     &format!("/work_packages/{}", args.task_id),
-                    payload,
+                    Value::Object(payload),
                 )?,
                 cli.json,
             );
@@ -1996,6 +2358,54 @@ mod tests {
                 format!("openproject {}\n", env!("CARGO_PKG_VERSION"))
             );
         }
+    }
+
+    #[test]
+    fn task_list_uses_server_side_filters_and_pagination() {
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "tasks",
+            "--assignee",
+            "7",
+            "--query",
+            "approval",
+            "--limit",
+            "25",
+            "--offset",
+            "3",
+        ])
+        .unwrap();
+        let Commands::Tasks(args) = cli.command else {
+            panic!("expected tasks command");
+        };
+        let path = work_package_path(13, &args, Some(7)).unwrap();
+        let filters = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+            .find_map(|(key, value)| (key == "filters").then_some(value.into_owned()))
+            .unwrap();
+        assert!(filters.contains("\"status\":{\"operator\":\"o\""));
+        assert!(filters.contains("\"assignee\":{\"operator\":\"=\""));
+        assert!(filters.contains("approval"));
+        assert_eq!(args.page.limit, 25);
+        assert_eq!(args.page.offset, 3);
+    }
+
+    #[test]
+    fn update_clear_options_are_explicit() {
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "update",
+            "12",
+            "--clear-description",
+            "--clear-assignee",
+        ])
+        .unwrap();
+        let Commands::Update(args) = cli.command else {
+            panic!("expected update command");
+        };
+        assert!(args.clear_description);
+        assert!(args.clear_assignee);
+        assert!(args.description.is_none());
+        assert!(args.assignee.is_none());
     }
 
     #[test]

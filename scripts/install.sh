@@ -117,16 +117,7 @@ cleanup() {
 
 verify_checksum() {
   ASSET="$1"
-  CHECK_LINE="$(
-    while IFS= read -r line; do
-      case "$line" in
-        *" $ASSET"|*" *$ASSET")
-          printf '%s\n' "$line"
-          break
-          ;;
-      esac
-    done < "$TEMP_DIR/$CHECKSUMS"
-  )"
+  CHECK_LINE="$(awk -v asset="$ASSET" 'length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ && ($2 == asset || $2 == "*" asset) { print; exit }' "$TEMP_DIR/$CHECKSUMS")"
   [ -n "$CHECK_LINE" ] || fail "No checksum was published for $ASSET."
 
   if [ "$CHECKSUM_COMMAND" = "sha256sum" ]; then
@@ -167,6 +158,7 @@ require_command tar
 require_command cp
 require_command chmod
 require_command mv
+require_command awk
 
 if [ -n "${OPENPROJECT_GITLAB_PROJECT:-}" ]; then
   [ "$VERSION" != "latest" ] || fail "A specific release version is required with OPENPROJECT_GITLAB_PROJECT."
