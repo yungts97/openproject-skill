@@ -58,7 +58,7 @@ openproject upgrade 0.2.0
 openproject upgrade --dry-run --json
 ```
 
-Rerunning the platform installation command also upgrades an existing executable in the destination directory. The installer verifies the downloaded archive, safely replaces the executable, and reports `Upgraded` instead of `Installed` when it finds an existing installation.
+`openproject upgrade` checks the latest release version before downloading its installer. If the running CLI is already current, it exits without downloading or replacing anything. Rerunning a platform installation command performs the same check for the executable in its destination directory. When an update is needed, the installer verifies the downloaded archive, safely replaces the executable, and reports `Upgraded` instead of `Installed` when it finds an existing installation.
 
 On Windows, `openproject upgrade` schedules the replacement immediately after the running process exits. The command targets the directory containing the executable, so it also works with a custom installation directory.
 

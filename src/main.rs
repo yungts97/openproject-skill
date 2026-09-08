@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use regex::Regex;
 use reqwest::blocking::{Client as HttpClient, RequestBuilder};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LOCATION};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -1398,8 +1398,7 @@ fn remove_global_config(plan: &PurgePlan) -> Result<Value> {
 }
 
 fn installer_url() -> String {
-    let repository = env::var("OPENPROJECT_RELEASE_REPOSITORY")
-        .unwrap_or_else(|_| DEFAULT_RELEASE_REPOSITORY.to_string());
+    let repository = release_repository();
     let installer = if cfg!(windows) {
         "install.ps1"
     } else {
@@ -1409,6 +1408,55 @@ fn installer_url() -> String {
         "https://raw.githubusercontent.com/{}/main/scripts/{installer}",
         repository.trim_matches('/')
     )
+}
+
+fn release_repository() -> String {
+    env::var("OPENPROJECT_RELEASE_REPOSITORY")
+        .unwrap_or_else(|_| DEFAULT_RELEASE_REPOSITORY.to_string())
+        .trim_matches('/')
+        .to_string()
+}
+
+fn latest_release_version() -> Result<String> {
+    let repository = release_repository();
+    let url = format!("https://github.com/{repository}/releases/latest");
+    let client = HttpClient::builder()
+        .user_agent(format!("openproject/{}", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("cannot create release version client")?;
+    let response = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("cannot check the latest release from {url}"))?;
+    if !response.status().is_redirection() {
+        bail!(
+            "latest release check expected a redirect from {url}, got {}",
+            response.status()
+        );
+    }
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .context("latest release redirect did not include a location")?
+        .to_str()
+        .context("latest release redirect location was invalid")?;
+    let release_url = Url::parse(location)
+        .with_context(|| format!("latest release redirect location was invalid: {location}"))?;
+    let version = release_url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty())
+        .context("latest release redirect did not include a version")?;
+    Ok(version.trim_start_matches('v').to_string())
+}
+
+fn requested_release_version(version: &str) -> Result<String> {
+    if version.eq_ignore_ascii_case("latest") {
+        latest_release_version()
+    } else {
+        Ok(version.trim_start_matches('v').to_string())
+    }
 }
 
 fn download_installer(url: &str, destination: &Path) -> Result<()> {
@@ -1553,6 +1601,24 @@ fn upgrade(cli: &Cli, args: &UpgradeArgs) -> Result<()> {
         return Ok(());
     }
 
+    let target_version = requested_release_version(&args.version)?;
+    if target_version == env!("CARGO_PKG_VERSION") {
+        if cli.json {
+            emit(
+                json!({
+                    "operation":"upgrade",
+                    "path":path,
+                    "status":"already-current",
+                    "version":target_version
+                }),
+                true,
+            );
+        } else {
+            println!("OpenProject {target_version} is already installed; no upgrade needed.");
+        }
+        return Ok(());
+    }
+
     let extension = if cfg!(windows) { "ps1" } else { "sh" };
     let installer = env::temp_dir().join(format!(
         "openproject-upgrade-{}.{}",
@@ -1563,11 +1629,11 @@ fn upgrade(cli: &Cli, args: &UpgradeArgs) -> Result<()> {
 
     #[cfg(windows)]
     {
-        schedule_upgrade_installer(cli, &installer, &args.version, destination)
+        schedule_upgrade_installer(cli, &installer, &target_version, destination)
     }
     #[cfg(not(windows))]
     {
-        let result = run_upgrade_installer(cli, &installer, &args.version, destination);
+        let result = run_upgrade_installer(cli, &installer, &target_version, destination);
         let _ = fs::remove_file(&installer);
         result
     }

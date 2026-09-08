@@ -71,6 +71,21 @@ function Confirm-Checksum {
   }
 }
 
+function Get-InstalledVersion {
+  if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    return $null
+  }
+  try {
+    $ReportedVersion = (& $Executable --version 2>$null | Select-Object -First 1).Trim()
+    if ($ReportedVersion -match '^openproject\s+(.+)$') {
+      return $Matches[1].Trim()
+    }
+  } catch {
+    return $null
+  }
+  return $null
+}
+
 function Install-AgentSkill {
   param([string]$Root)
   $SkillDirectory = Join-Path $Root "openproject"
@@ -150,6 +165,23 @@ try {
     if (-not (Get-Command glab -ErrorAction SilentlyContinue)) {
       throw "Required command 'glab' was not found on PATH. Install it and authenticate before using OPENPROJECT_GITLAB_PROJECT."
     }
+  }
+
+  if ($Version -eq "latest" -and -not $env:OPENPROJECT_GITLAB_PROJECT) {
+    try {
+      $LatestRelease = Invoke-WebRequest -Method Head "https://github.com/$Repository/releases/latest"
+      $Version = $LatestRelease.BaseResponse.ResponseUri.Segments[-1].Trim("/").TrimStart("v")
+    } catch {
+      throw "Could not check the latest release. Check your network connection. $($_.Exception.Message)"
+    }
+    if (-not $Version) {
+      throw "Could not determine the latest release version."
+    }
+  }
+
+  if ((Get-InstalledVersion) -eq $Version) {
+    Write-Host "OpenProject $Version is already installed; no upgrade needed."
+    return
   }
 
   $Temporary = Join-Path ([IO.Path]::GetTempPath()) ("openproject-" + [guid]::NewGuid())

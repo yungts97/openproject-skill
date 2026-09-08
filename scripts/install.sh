@@ -136,6 +136,13 @@ verify_checksum() {
   fi
 }
 
+installed_version() {
+  [ -x "$EXECUTABLE" ] || return 1
+  INSTALLED_VERSION="$("$EXECUTABLE" --version 2>/dev/null)" || return 1
+  INSTALLED_VERSION="${INSTALLED_VERSION#openproject }"
+  printf '%s\n' "${INSTALLED_VERSION%% *}"
+}
+
 install_skill() {
   ROOT="$1"
   SKILL_DIRECTORY="$ROOT/openproject"
@@ -153,14 +160,6 @@ install_skill() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-
-info "OpenProject CLI and Agent Skill installer"
-info ""
-info "  Version:     $VERSION"
-info "  Target:      $TARGET"
-info "  Destination: $EXECUTABLE"
-info "  Agent Skill: $SKILL_ROOT/openproject/SKILL.md"
-info ""
 
 step 1 "Checking system requirements"
 require_command mktemp
@@ -183,6 +182,29 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   fail "A SHA-256 tool is required. Install 'sha256sum' or 'shasum' and try again."
 fi
+
+if [ "$VERSION" = "latest" ] && [ -z "${OPENPROJECT_GITLAB_PROJECT:-}" ]; then
+  LATEST_RELEASE_URL="$(curl --fail --head --location --silent --show-error \
+    --output /dev/null --write-out '%{url_effective}' \
+    "https://github.com/${REPOSITORY}/releases/latest")" \
+    || fail "Could not check the latest release. Check your network connection."
+  VERSION="${LATEST_RELEASE_URL##*/}"
+  VERSION="${VERSION#v}"
+  [ -n "$VERSION" ] || fail "Could not determine the latest release version."
+fi
+
+if [ "$(installed_version || true)" = "$VERSION" ]; then
+  info "OpenProject $VERSION is already installed; no upgrade needed."
+  exit 0
+fi
+
+info "OpenProject CLI and Agent Skill installer"
+info ""
+info "  Version:     $VERSION"
+info "  Target:      $TARGET"
+info "  Destination: $EXECUTABLE"
+info "  Agent Skill: $SKILL_ROOT/openproject/SKILL.md"
+info ""
 
 TEMP_DIR="$(mktemp -d)" || fail "Could not create a temporary directory."
 
