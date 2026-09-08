@@ -1070,6 +1070,7 @@ fn resolve_project(
         if let Ok(number) = value.parse::<u64>() {
             return client.get(&format!("/projects/{number}"));
         }
+        let normalized_value = normalize(&value);
         let matches: Vec<_> = projects
             .into_iter()
             .filter(|p| {
@@ -1077,7 +1078,7 @@ fn resolve_project(
                     .into_iter()
                     .flatten()
                     .filter_map(Value::as_str)
-                    .any(|x| normalize(x) == normalize(&value))
+                    .any(|name| normalize(name) == normalized_value)
             })
             .collect();
         return match matches.len() {
@@ -1087,6 +1088,10 @@ fn resolve_project(
         };
     }
     let candidates = project_candidates(cwd);
+    let normalized_candidates: HashSet<_> = candidates
+        .iter()
+        .map(|candidate| normalize(candidate))
+        .collect();
     let matches: Vec<_> = projects
         .iter()
         .filter(|p| {
@@ -1094,11 +1099,7 @@ fn resolve_project(
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
-                .any(|project_name| {
-                    candidates
-                        .iter()
-                        .any(|candidate| normalize(project_name) == normalize(candidate))
-                })
+                .any(|project_name| normalized_candidates.contains(&normalize(project_name)))
         })
         .cloned()
         .collect();
@@ -1124,13 +1125,14 @@ fn resolve_item(client: &OpenProjectClient, path: &str, value: &str, kind: &str)
     if let Ok(n) = value.parse() {
         return Ok(n);
     }
+    let normalized_value = normalize(value);
     let matches: Vec<_> = client
         .collection(path)?
         .into_iter()
         .filter(|item| {
             item.get("name")
                 .and_then(Value::as_str)
-                .map(|name| normalize(name) == normalize(value))
+                .map(|name| normalize(name) == normalized_value)
                 .unwrap_or(false)
         })
         .collect();
