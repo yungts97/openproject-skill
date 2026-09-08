@@ -119,12 +119,16 @@ verify_checksum() {
   ASSET="$1"
   CHECK_LINE="$(awk -v asset="$ASSET" 'length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ && ($2 == asset || $2 == "*" asset) { print; exit }' "$TEMP_DIR/$CHECKSUMS")"
   [ -n "$CHECK_LINE" ] || fail "No checksum was published for $ASSET."
+  EXPECTED_CHECKSUM="${CHECK_LINE%%[[:space:]]*}"
 
   if [ "$CHECKSUM_COMMAND" = "sha256sum" ]; then
-    printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && sha256sum --check - >/dev/null) || fail "Checksum verification failed for $ASSET. The downloaded file may be damaged or unsafe."
+    ACTUAL_CHECKSUM="$(sha256sum "$TEMP_DIR/$ASSET")" || fail "Could not calculate the SHA-256 checksum for $ASSET."
   else
-    printf '%s\n' "$CHECK_LINE" | (cd "$TEMP_DIR" && shasum -a 256 -c - >/dev/null) || fail "Checksum verification failed for $ASSET. The downloaded file may be damaged or unsafe."
+    ACTUAL_CHECKSUM="$(shasum -a 256 "$TEMP_DIR/$ASSET")" || fail "Could not calculate the SHA-256 checksum for $ASSET."
   fi
+  ACTUAL_CHECKSUM="${ACTUAL_CHECKSUM%%[[:space:]]*}"
+
+  [ "$ACTUAL_CHECKSUM" = "$EXPECTED_CHECKSUM" ] || fail "Checksum verification failed for $ASSET. The downloaded file may be damaged or unsafe."
 }
 
 installed_version() {
