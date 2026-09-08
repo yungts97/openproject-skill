@@ -74,7 +74,7 @@ Use `openproject uninstall --dry-run` to display the executable path without rem
 
 This command preserves global and repository configuration as well as the separately installed Agent Skill. Remove the skill through the agent or skill manager that installed it.
 
-For a complete local cleanup, use `openproject uninstall --purge`. It removes the global configuration file, removes its directory only when empty, and deletes the stored credential for the configured host before removing the executable. If the global configuration is missing or invalid, pass `--host https://openproject.example.com` to identify the credential to remove. Repository `.openproject.json` files and the separately installed Agent Skill are always preserved. Use `--dry-run` to preview every target.
+For a complete local cleanup, use `openproject uninstall --purge`. It removes the global configuration file and the stored credential for the configured host before removing the executable. If that credential is the last entry in the protected credential file, the file is removed too; otherwise, credentials for other hosts remain. The command reports the precise credential stores removed and removes the configuration directory only when it is empty. If the global configuration is missing or invalid, pass `--host https://openproject.example.com` to identify the credential to remove. Repository `.openproject.json` files and the separately installed Agent Skill are always preserved. Use `--dry-run` to preview every target.
 
 ## Authentication
 

@@ -656,7 +656,22 @@ impl CredentialStore for FileCredentialStore {
         let mut file = self.read()?;
         let existed = file.credentials.remove(&self.host).is_some();
         if existed {
-            self.write(&file)?;
+            if file.credentials.is_empty() {
+                match fs::remove_file(&self.path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "cannot remove empty OpenProject credential file {}",
+                                self.path.display()
+                            )
+                        })
+                    }
+                }
+            } else {
+                self.write(&file)?;
+            }
         }
         Ok(existed)
     }
@@ -1334,10 +1349,16 @@ fn remove_global_config(plan: &PurgePlan) -> Result<Value> {
     let mut removed_credentials = Vec::new();
     if let Some(host) = &plan.credential_host {
         for kind in [CredentialStoreKind::Native, CredentialStoreKind::File] {
+            if kind == CredentialStoreKind::Native && !NativeCredentialStore::available() {
+                continue;
+            }
             let Ok(store) = store_for(kind, host) else {
                 continue;
             };
-            if store.delete().unwrap_or(false) {
+            if store
+                .delete()
+                .with_context(|| format!("cannot remove credentials from {}", store.name()))?
+            {
                 removed_credentials.push(store.name());
             }
         }
@@ -1600,17 +1621,26 @@ fn uninstall(cli: &Cli, args: &UninstallArgs) -> Result<()> {
     }
     if let Some(purge) = purge {
         println!("Global config: {}", purge["configStatus"]);
-        println!(
-            "Global config directory: {}",
-            purge["configDirectoryStatus"]
-        );
-        if purge["credentialStoresRemoved"]
+        match purge["configDirectoryStatus"].as_str() {
+            Some("not_empty") => println!(
+                "Global config directory retained because it is not empty: {}",
+                purge["configDirectory"]
+            ),
+            Some(status) => println!("Global config directory: {status}"),
+            None => println!("Global config directory: unknown status"),
+        }
+        let removed_stores = purge["credentialStoresRemoved"]
             .as_array()
-            .is_some_and(|stores| stores.is_empty())
-        {
+            .expect("credentialStoresRemoved is always an array");
+        if removed_stores.is_empty() {
             println!("Stored credentials: none removed");
         } else {
-            println!("Stored credentials: removed");
+            let stores = removed_stores
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("Stored credentials removed from: {stores}");
         }
     }
     Ok(())
@@ -2099,6 +2129,8 @@ mod tests {
         assert_eq!(two.load().unwrap().as_deref(), Some("two"));
         assert!(one.delete().unwrap());
         assert!(one.load().unwrap().is_none());
+        assert!(two.delete().unwrap());
+        assert!(!path.exists());
         let _ = fs::remove_dir_all(directory);
     }
 
