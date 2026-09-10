@@ -28,9 +28,13 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
 
-The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The skill is installed to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it to `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available. On a new interactive installation, the installer offers to launch secure OpenProject setup; non-interactive installations print the command to run later.
+The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The skill is installed to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it to `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available.
 
-Ensure the destination directory is on `PATH`, then verify the installation:
+When the default CLI directory is not persistently configured, the Unix installer adds one idempotent entry to the login shell's startup file and the PowerShell installer updates both the user PATH and its current process. Set `OPENPROJECT_NO_MODIFY_PATH=1` to opt out. Custom Unix destinations are left for you to add manually so the installer never writes an arbitrary value into a shell startup file.
+
+On a new interactive installation, the installer offers to launch secure OpenProject setup. The Unix prompt also works with the documented `curl | sh` command by reading from the controlling terminal. Non-interactive installations print a prominent absolute `auth login` command instead; set `OPENPROJECT_NO_AUTH_PROMPT=1` to force this behavior when running through an agent or CI.
+
+Open a new terminal if PATH was updated, then verify the installation:
 
 ```sh
 openproject --version
@@ -58,7 +62,7 @@ openproject upgrade 0.2.0
 openproject upgrade --dry-run --json
 ```
 
-`openproject upgrade` checks the latest release version before downloading its installer. If the running CLI is already current, it exits without downloading or replacing anything. Rerunning a platform installation command performs the same check for the executable in its destination directory. When an update is needed, the installer verifies the downloaded archive, safely replaces the executable, and reports `Upgraded` instead of `Installed` when it finds an existing installation.
+`openproject upgrade` checks the latest release version before downloading its installer. If the running CLI is already current, it exits without downloading or replacing anything. Rerunning a platform installation command performs the same executable check; when the CLI is current, it skips the binary archive but downloads, verifies, and refreshes the matching Agent Skill. When an executable update is needed, the installer verifies the downloaded archive, safely replaces the executable, and reports `Upgraded` instead of `Installed` when it finds an existing installation.
 
 On Windows, `openproject upgrade` schedules the replacement immediately after the running process exits. The command targets the directory containing the executable, so it also works with a custom installation directory.
 

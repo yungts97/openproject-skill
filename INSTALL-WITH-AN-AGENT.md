@@ -7,21 +7,27 @@ These instructions are for the coding agent performing the installation. The Ope
 1. Obtain approval if the environment requires it, then run the raw installer for the current operating system. For Linux or macOS:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | sh
+   curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | OPENPROJECT_NO_AUTH_PROMPT=1 sh
    ```
 
    For Windows PowerShell:
 
    ```powershell
-   irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
+   $previousAuthPrompt = $env:OPENPROJECT_NO_AUTH_PROMPT
+   try {
+     $env:OPENPROJECT_NO_AUTH_PROMPT = "1"
+     irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
+   } finally {
+     $env:OPENPROJECT_NO_AUTH_PROMPT = $previousAuthPrompt
+   }
    ```
 
-   For a requested Unix version, append it through `sh`, for example `curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | sh -s -- 0.1.3`. On PowerShell, download the script to a temporary file and invoke it with `-Version`.
+   `OPENPROJECT_NO_AUTH_PROMPT=1` prevents an agent-owned pseudo-terminal from waiting for secret input; it does not skip the authentication handoff below. For a requested Unix version, append it through `sh`, for example `curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | OPENPROJECT_NO_AUTH_PROMPT=1 sh -s -- 0.1.3`. On PowerShell, download the script to a temporary file and invoke it with `-Version`.
 
 2. The installer downloads and verifies both the platform-specific CLI and the release-pinned `SKILL.md`. It writes the skill to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, it also writes `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_SKILL_DIR` (or `-SkillDestination` in PowerShell) to select another user-level skill directory.
 3. Read the installed `SKILL.md`. Build the CLI from source only when no compatible release artifact is available.
 4. Respect the environment's permission and approval requirements. Stop if a download, permission request, platform check, or checksum verification fails; do not bypass the failed safeguard.
-5. Verify the CLI with `openproject --version` and `openproject --help`, and confirm its resolved executable path. If its directory is not on `PATH`, report the exact change required rather than silently editing shell startup files.
+5. Verify the CLI with `openproject --version` and `openproject --help`, and confirm its resolved executable path. The installer automatically persists its directory in PATH when possible. The current agent process may still have the old PATH, so use the absolute executable path for verification when necessary. If automatic PATH setup reports a failure or a custom Unix destination requires manual setup, report that remaining action exactly.
 6. Confirm that the agent can discover the installed skill. If discovery requires restarting the agent or opening a new session, tell the user explicitly.
-7. Do not ask the user to paste an OpenProject API token into chat, pass a token as a command argument, or save one in plaintext. If the installer offers to configure OpenProject interactively, decline it. Tell the user to run `openproject auth login` in their own interactive terminal after installation.
-8. Finish by reporting the installed skill path, CLI path and version, verification results, and every remaining manual action.
+7. Run `openproject auth status --json` with the absolute executable path. If it is not authenticated, do not ask the user to paste an OpenProject API token into chat, pass one as a command argument, or save one in plaintext. Show the installer's exact absolute `auth login` command, ask the user to run it in their own interactive terminal, and wait for them to confirm completion.
+8. After login, run `openproject auth status --json` again without exposing credentials. Finish by reporting the installed skill path, CLI path and version, PATH result, authentication verification, and every remaining manual action.
