@@ -205,11 +205,12 @@ Global options may be supplied before or after a subcommand.
 | `task TASK_ID [--full]` | Show a compact work-package summary, or its complete API representation with `--full` |
 | `activities TASK_ID [--limit N] [--offset N]` | List a work package's activity/history entries with complete activity details |
 | `activity ACTIVITY_ID` | Show one activity with its comment and change details |
+| `time-entry-activities TASK_ID` | List the activity names and IDs allowed by the work package’s time-entry form |
 | `relations TASK_ID [--limit N] [--offset N]` | List ordinary relations in which a work package is involved, plus its parent/child hierarchy links |
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type/type ID, assignee, dates, and estimate |
 | `update TASK_ID [OPTIONS]` | Update subject, description, status, assignee, percent complete, dates, or estimate; deliberate `--clear-*` flags remove nullable values |
 | `comment TASK_ID --message TEXT` | Add an activity comment |
-| `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity ID |
+| `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity name or ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
 | `upgrade [VERSION]` | Upgrade to the latest release, or to a specific version without the leading `v` |
 | `uninstall` | Remove the running executable while preserving configuration and Agent Skill files |
@@ -228,11 +229,12 @@ openproject tasks --project 13 --assignee me --query approval --limit 50 --offse
 openproject task 123 --full --json
 openproject activities 123 --limit 50 --json
 openproject activity 456 --json
+openproject time-entry-activities 123 --json
 openproject relations 123 --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
-openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
+openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json

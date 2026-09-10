@@ -77,11 +77,12 @@ openproject tasks --project 13 --assignee me --query approval --limit 50 --offse
 openproject task 123 --full --json
 openproject activities 123 --limit 50 --json
 openproject activity 456 --json
+openproject time-entry-activities 123 --json
 openproject relations 123 --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
-openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation"
+openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json
@@ -94,6 +95,7 @@ openproject uninstall --purge --dry-run --json
 - Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
 - Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
+- Before logging time, run `time-entry-activities TASK_ID --json`, present the activity names allowed by the time-entry form, and ask the user to choose one. Do not infer an activity when none was specified.
 - `tasks`, `projects`, `activities`, and `relations` are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
 - `activities` expands every entry to its full activity resource; use `activity ACTIVITY_ID` to retrieve a single entry directly. `relations TASK_ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links when present.
 - `task --full` returns the complete OpenProject representation; the default is a compact, agent-friendly summary.

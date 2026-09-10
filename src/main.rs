@@ -67,6 +67,8 @@ enum Commands {
     Activities(ActivityArgs),
     /// Show one activity with its comment and change details.
     Activity(ActivityIdArgs),
+    /// List the time-entry activities available for a work package.
+    TimeEntryActivities(TimeEntryActivitiesArgs),
     /// List relations for a work package.
     Relations(ActivityArgs),
     /// Create a work package.
@@ -154,6 +156,11 @@ struct ActivityIdArgs {
 }
 
 #[derive(Args, Debug)]
+struct TimeEntryActivitiesArgs {
+    task_id: u64,
+}
+
+#[derive(Args, Debug)]
 struct UpgradeArgs {
     /// Release version to install, or "latest".
     #[arg(default_value = "latest")]
@@ -234,8 +241,9 @@ struct LogTimeArgs {
     date: String,
     #[arg(long)]
     comment: Option<String>,
-    #[arg(long)]
-    activity_id: Option<u64>,
+    /// Time-entry activity name or numeric ID.
+    #[arg(long, visible_alias = "activity-id")]
+    activity: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1263,6 +1271,87 @@ fn resolve_item(client: &OpenProjectClient, path: &str, value: &str, kind: &str)
         _ => bail!("multiple {kind} values match {value:?}; use a numeric ID"),
     }
 }
+fn time_entry_activity_values(form: &Value) -> Result<Vec<Value>> {
+    let field = form
+        .pointer("/_embedded/schema/activity")
+        .ok_or_else(|| anyhow!("OpenProject time-entry form has no activity schema"))?;
+    let values = field
+        .pointer("/_embedded/allowedValues")
+        .or_else(|| field.pointer("/_links/allowedValues"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("OpenProject time-entry form has no allowed activity values"))?;
+    values
+        .iter()
+        .map(|value| {
+            let href = value
+                .pointer("/_links/self/href")
+                .or_else(|| value.get("href"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("time-entry activity has no link"))?;
+            let name = value
+                .get("name")
+                .or_else(|| value.get("title"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("time-entry activity has no name"))?;
+            let activity_id = value.get("id").and_then(Value::as_u64).or_else(|| {
+                href.split('?')
+                    .next()
+                    .and_then(|path| path.rsplit('/').next())
+                    .and_then(|part| part.parse().ok())
+            });
+            Ok(json!({"id": activity_id, "name": name, "href": href}))
+        })
+        .collect()
+}
+fn time_entry_activity_form(client: &OpenProjectClient, task_id: u64) -> Result<Vec<Value>> {
+    let task = client.get(&format!("/work_packages/{task_id}"))?;
+    let project = href(&task, "project")
+        .ok_or_else(|| anyhow!("work package response has no project link"))?;
+    let work_package = format!("/api/v3/work_packages/{task_id}");
+    let form = client.request(
+        reqwest::Method::POST,
+        "/time_entries/form",
+        Some(json!({"_links": {
+            "entity": {"href": work_package},
+            "workPackage": {"href": work_package},
+            "project": {"href": project}
+        }})),
+    )?;
+    time_entry_activity_values(&form)
+}
+fn time_entry_activities(client: &OpenProjectClient, task_id: u64) -> Result<Value> {
+    Ok(json!({
+        "taskId": task_id,
+        "activities": time_entry_activity_form(client, task_id)?
+    }))
+}
+fn resolve_time_entry_activity(
+    client: &OpenProjectClient,
+    task_id: u64,
+    value: &str,
+) -> Result<String> {
+    let activities = time_entry_activity_form(client, task_id)?;
+    let normalized_value = normalize(value);
+    let matches = activities
+        .iter()
+        .filter(|activity| {
+            activity.get("id").and_then(Value::as_u64) == value.parse().ok()
+                || activity
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| normalize(name) == normalized_value)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [activity] => activity
+            .get("href")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("time-entry activity has no link")),
+        [] => bail!("no available time-entry activity exactly matches {value:?}"),
+        _ => bail!("multiple time-entry activities match {value:?}; use a numeric ID"),
+    }
+}
 fn resolve_user(client: &OpenProjectClient, value: &str) -> Result<u64> {
     if value.eq_ignore_ascii_case("me") {
         return id(&client.get("/users/me")?);
@@ -2118,6 +2207,9 @@ fn run(cli: &Cli) -> Result<()> {
             client.get(&format!("/activities/{}", args.activity_id))?,
             cli.json,
         ),
+        Commands::TimeEntryActivities(args) => {
+            emit(time_entry_activities(&client, args.task_id)?, cli.json)
+        }
         Commands::Relations(args) => emit(relation_page(&client, args)?, cli.json),
         Commands::Create(args) => {
             let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
@@ -2259,7 +2351,12 @@ fn run(cli: &Cli) -> Result<()> {
             let task = client.get(&format!("/work_packages/{}", args.task_id))?;
             let project = href(&task, "project")
                 .ok_or_else(|| anyhow!("work package response has no project link"))?;
-            let payload = json!({"hours":duration(&args.hours)?,"spentOn":args.date,"comment":args.comment.as_ref().map(|raw|json!({"format":"plain","raw":raw})),"_links":{"workPackage":{"href":format!("/api/v3/work_packages/{}",args.task_id)},"project":{"href":project},"activity":args.activity_id.map(|n|json!({"href":format!("/api/v3/time_entries/activities/{n}")}))}});
+            let activity = args
+                .activity
+                .as_deref()
+                .map(|value| resolve_time_entry_activity(&client, args.task_id, value))
+                .transpose()?;
+            let payload = json!({"hours":duration(&args.hours)?,"spentOn":args.date,"comment":args.comment.as_ref().map(|raw|json!({"format":"plain","raw":raw})),"_links":{"workPackage":{"href":format!("/api/v3/work_packages/{}",args.task_id)},"project":{"href":project},"activity":activity.map(|href|json!({"href":href}))}});
             emit(
                 write(
                     &client,
@@ -2346,6 +2443,34 @@ mod tests {
         fn delete(&self) -> Result<bool> {
             Ok(self.token.borrow_mut().take().is_some())
         }
+    }
+
+    #[test]
+    fn reads_time_entry_activities_from_form_schema() {
+        let form = json!({
+            "_embedded": {
+                "schema": {
+                    "activity": {
+                        "_embedded": {
+                            "allowedValues": [{
+                                "id": 18,
+                                "name": "Development",
+                                "_links": {"self": {"href": "/api/v3/time_entries/activities/18"}}
+                            }]
+                        }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            time_entry_activity_values(&form).unwrap(),
+            vec![json!({
+                "id": 18,
+                "name": "Development",
+                "href": "/api/v3/time_entries/activities/18"
+            })]
+        );
     }
 
     #[test]
