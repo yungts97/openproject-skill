@@ -204,15 +204,23 @@ Global options may be supplied before or after a subcommand.
 | `auth logout` | Remove the saved credential while retaining the configured host |
 | `auth verify` | Validate the resolved URL and token by loading the current user |
 | `projects [--limit N] [--offset N]` | List one page of visible OpenProject projects |
+| `statuses [--limit N] [--offset N]` | List work package statuses |
+| `priorities [--limit N] [--offset N]` | List work package priorities |
+| `types [--project ID_OR_NAME]` | List work package types available in the resolved project |
+| `users [--project ID_OR_NAME]` | List users who can be assigned work in the resolved project |
+| `versions [--project ID_OR_NAME]` | List versions available in the resolved project |
+| `categories [--project ID_OR_NAME]` | List work package categories available in the resolved project |
 | `project [--project ID_OR_NAME] [--bind]` | Resolve and display the project; `--bind` explicitly saves its numeric ID to the repository configuration |
-| `tasks [--project ID_OR_NAME] [--all] [--assignee ID_OR_ME] [--query TEXT] [--limit N] [--offset N]` | List one server-filtered page of project work packages; closed items are hidden unless `--all` is used |
+| `tasks [--project ID_OR_NAME] [FILTERS] [--sort FIELD:DIRECTION]` | List one server-filtered page of project work packages; supports assignee, subject, status, type, priority, due-date, recent-update, and repeated sort filters |
 | `task TASK_ID [--full]` | Show a compact work-package summary, or its complete API representation with `--full` |
 | `activities TASK_ID [--limit N] [--offset N]` | List a work package's activity/history entries with complete activity details |
 | `activity ACTIVITY_ID` | Show one activity with its comment and change details |
 | `time-entry-activities TASK_ID` | List the activity names and IDs allowed by the work package’s time-entry form |
 | `relations TASK_ID [--limit N] [--offset N]` | List ordinary relations in which a work package is involved, plus its parent/child hierarchy links |
-| `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type/type ID, assignee, dates, and estimate |
-| `update TASK_ID [OPTIONS]` | Update subject, description, status, assignee, percent complete, dates, or estimate; deliberate `--clear-*` flags remove nullable values |
+| `relation add FROM_ID --to TO_ID [OPTIONS]` | Create a typed relation, optionally with a description and lag |
+| `relation delete RELATION_ID` | Delete a relation; supports the global `--dry-run` preview |
+| `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
+| `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
 | `comment TASK_ID --message TEXT` | Add an activity comment |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity name or ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
@@ -221,7 +229,9 @@ Global options may be supplied before or after a subcommand.
 
 Run `openproject COMMAND --help` for the full option list.
 
-Dates use `YYYY-MM-DD`. Durations accept decimal hours that resolve to whole minutes, such as `1.5`, or ISO-8601 durations such as `PT1H30M`. `--assignee` accepts a numeric user ID or `me`. Statuses, types, and projects are matched exactly after case and punctuation normalization; numeric IDs avoid ambiguity.
+Dates use `YYYY-MM-DD`. Durations accept decimal hours that resolve to whole minutes, such as `1.5`, or ISO-8601 durations such as `PT1H30M`. User fields accept a numeric user ID or `me`. Statuses, priorities, types, versions, and projects are matched exactly after case and punctuation normalization; numeric IDs avoid ambiguity.
+
+Use repeated `--custom-field customFieldN=JSON` arguments for scalar custom fields. If the value is not valid JSON, it is treated as a string. Use `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for linked custom fields. The numeric property name and value type come from the OpenProject work package schema; the CLI deliberately does not guess them.
 
 Examples:
 
@@ -229,14 +239,18 @@ Examples:
 openproject projects --json
 openproject project --project 13 --json
 openproject project --project 13 --bind --json
-openproject tasks --project 13 --assignee me --query approval --limit 50 --offset 1 --json
+openproject statuses --json
+openproject users --project 13 --json
+openproject tasks --project 13 --assignee me --status "In progress" --priority High --due-before 2026-09-30 --updated-since 7d --sort priority:desc --sort updated-at:desc --json
 openproject task 123 --full --json
 openproject activities 123 --limit 50 --json
 openproject activity 456 --json
 openproject time-entry-activities 123 --json
 openproject relations 123 --json
-openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
-openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
+openproject relation add 123 --to 456 --type blocks --dry-run --json
+openproject relation delete 789 --dry-run --json
+openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
+openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
@@ -254,11 +268,12 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - With `--json`, runtime failures are written to stderr as `{"error":{"message":"..."}}`.
 - Use `--dry-run --json` to inspect write requests before submitting them.
 - Collection commands return one page by default. Use `--limit` and `--offset`; task-list output includes `next`, `total`, and page metadata.
-- `tasks` sends status, assignee, and subject filtering to OpenProject instead of downloading and filtering every work package locally.
-- `--clear-description`, `--clear-assignee`, `--clear-start-date`, `--clear-due-date`, and `--clear-estimate` intentionally send a null value. A clear option cannot be combined with its corresponding value option.
+- `tasks` sends all filters and sorting to OpenProject instead of downloading and filtering work packages locally. Repeating `--status`, `--type`, or `--priority` creates an OR list within that field; different fields are combined with AND.
+- `--updated-since` accepts a positive day count such as `7` or `7d`. `--sort` accepts a documented field with optional `asc` or `desc` and may be repeated for secondary sorting.
+- `--clear-description`, `--clear-assignee`, `--clear-responsible`, `--clear-parent`, `--clear-version`, `--clear-start-date`, `--clear-due-date`, `--clear-estimate`, and the custom-field clear options intentionally send a null value. A clear option cannot be combined with its corresponding value option.
 - `project --bind` is an explicit local write to `.openproject.json`; agents must still obtain the repository-binding approval described in the Agent Skill. Its `--dry-run` output previews the target file and resolved ID without writing.
 - `--version`, `--help`, `commit-link`, `upgrade`, and `uninstall` do not require OpenProject credentials.
-- Treat `create`, `update`, `comment`, and `log-time` as external writes and run them only after the user authorizes the specific action.
+- Treat `create`, `update`, `comment`, `log-time`, and `relation add/delete` as external writes and run them only after the user authorizes the specific action.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.
 
 ## Private GitLab release mirrors

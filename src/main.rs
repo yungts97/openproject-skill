@@ -57,6 +57,18 @@ enum Commands {
     },
     /// List visible OpenProject projects.
     Projects(PageArgs),
+    /// List OpenProject work package statuses.
+    Statuses(PageArgs),
+    /// List OpenProject work package priorities.
+    Priorities(PageArgs),
+    /// List work package types available in a project.
+    Types(ProjectPageArgs),
+    /// List users who can be assigned work in a project.
+    Users(ProjectPageArgs),
+    /// List versions available in a project.
+    Versions(ProjectPageArgs),
+    /// List work package categories available in a project.
+    Categories(ProjectPageArgs),
     /// Resolve the project for this repository.
     Project(ProjectArg),
     /// List work packages in a project.
@@ -71,6 +83,11 @@ enum Commands {
     TimeEntryActivities(TimeEntryActivitiesArgs),
     /// List relations for a work package.
     Relations(ActivityArgs),
+    /// Create or delete work package relations.
+    Relation {
+        #[command(subcommand)]
+        command: RelationCommands,
+    },
     /// Create a work package.
     Create(CreateArgs),
     /// Update a work package.
@@ -102,6 +119,14 @@ enum AuthCommands {
     Verify,
 }
 
+#[derive(Subcommand, Debug)]
+enum RelationCommands {
+    /// Create a relation from one work package to another.
+    Add(RelationAddArgs),
+    /// Delete a relation by relation ID.
+    Delete(RelationDeleteArgs),
+}
+
 #[derive(Args, Debug)]
 struct ProjectArg {
     #[arg(long)]
@@ -121,6 +146,24 @@ struct TasksArgs {
     assignee: Option<String>,
     #[arg(long)]
     query: Option<String>,
+    /// Filter by an exact status name or numeric ID. Repeat for multiple values.
+    #[arg(long)]
+    status: Vec<String>,
+    /// Filter by an exact type name or numeric ID. Repeat for multiple values.
+    #[arg(long = "type")]
+    types: Vec<String>,
+    /// Filter by an exact priority name or numeric ID. Repeat for multiple values.
+    #[arg(long)]
+    priority: Vec<String>,
+    /// Include work packages due on or before this YYYY-MM-DD date.
+    #[arg(long)]
+    due_before: Option<String>,
+    /// Include work packages updated within this many days, e.g. 7 or 7d.
+    #[arg(long)]
+    updated_since: Option<String>,
+    /// Sort as FIELD[:asc|desc]. Repeat for secondary sorting.
+    #[arg(long)]
+    sort: Vec<String>,
     #[command(flatten)]
     page: PageArgs,
 }
@@ -133,6 +176,14 @@ struct PageArgs {
     /// One-based result-page offset.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     offset: u32,
+}
+
+#[derive(Args, Debug)]
+struct ProjectPageArgs {
+    #[arg(long)]
+    project: Option<String>,
+    #[command(flatten)]
+    page: PageArgs,
 }
 
 #[derive(Args, Debug)]
@@ -153,6 +204,35 @@ struct ActivityArgs {
 #[derive(Args, Debug)]
 struct ActivityIdArgs {
     activity_id: u64,
+}
+
+#[derive(Args, Debug)]
+struct RelationAddArgs {
+    /// Work package from which the relation originates.
+    from_id: u64,
+    /// Work package to which the relation points.
+    #[arg(long)]
+    to: u64,
+    /// Relation type from the perspective of FROM_ID.
+    #[arg(
+        long,
+        default_value = "relates",
+        value_parser = [
+            "relates", "duplicates", "duplicated", "blocks", "blocked", "precedes",
+            "follows", "includes", "partof", "requires", "required"
+        ]
+    )]
+    r#type: String,
+    #[arg(long)]
+    description: Option<String>,
+    /// Lag in days; supported only by applicable relation types.
+    #[arg(long)]
+    lag: Option<u64>,
+}
+
+#[derive(Args, Debug)]
+struct RelationDeleteArgs {
+    relation_id: u64,
 }
 
 #[derive(Args, Debug)]
@@ -189,11 +269,25 @@ struct CreateArgs {
     #[arg(long)]
     assignee: Option<String>,
     #[arg(long)]
+    priority: Option<String>,
+    #[arg(long)]
+    responsible: Option<String>,
+    #[arg(long)]
+    parent: Option<u64>,
+    #[arg(long)]
+    version: Option<String>,
+    #[arg(long)]
     start_date: Option<String>,
     #[arg(long)]
     due_date: Option<String>,
     #[arg(long)]
     estimate: Option<String>,
+    /// Set a scalar custom field as customFieldN=JSON. Non-JSON values are strings.
+    #[arg(long = "custom-field", value_name = "CUSTOM_FIELD=JSON")]
+    custom_fields: Vec<String>,
+    /// Set a linked custom field as customFieldN=/api/v3/RESOURCE/ID.
+    #[arg(long = "custom-field-link", value_name = "CUSTOM_FIELD=HREF")]
+    custom_field_links: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -207,6 +301,14 @@ struct UpdateArgs {
     status: Option<String>,
     #[arg(long)]
     assignee: Option<String>,
+    #[arg(long)]
+    priority: Option<String>,
+    #[arg(long)]
+    responsible: Option<String>,
+    #[arg(long)]
+    parent: Option<u64>,
+    #[arg(long)]
+    version: Option<String>,
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     percent: Option<u8>,
     #[arg(long)]
@@ -215,12 +317,27 @@ struct UpdateArgs {
     due_date: Option<String>,
     #[arg(long)]
     estimate: Option<String>,
+    /// Set a scalar custom field as customFieldN=JSON. Non-JSON values are strings.
+    #[arg(long = "custom-field", value_name = "CUSTOM_FIELD=JSON")]
+    custom_fields: Vec<String>,
+    /// Set a linked custom field as customFieldN=/api/v3/RESOURCE/ID.
+    #[arg(long = "custom-field-link", value_name = "CUSTOM_FIELD=HREF")]
+    custom_field_links: Vec<String>,
     /// Clear the work package description.
     #[arg(long)]
     clear_description: bool,
     /// Remove the assignee.
     #[arg(long)]
     clear_assignee: bool,
+    /// Remove the responsible user.
+    #[arg(long)]
+    clear_responsible: bool,
+    /// Remove the parent work package.
+    #[arg(long)]
+    clear_parent: bool,
+    /// Remove the assigned version.
+    #[arg(long)]
+    clear_version: bool,
     /// Clear the start date.
     #[arg(long)]
     clear_start_date: bool,
@@ -230,6 +347,12 @@ struct UpdateArgs {
     /// Clear the estimated time.
     #[arg(long)]
     clear_estimate: bool,
+    /// Clear a scalar customFieldN value. Repeat for multiple fields.
+    #[arg(long = "clear-custom-field", value_name = "CUSTOM_FIELD")]
+    clear_custom_fields: Vec<String>,
+    /// Clear a linked customFieldN value. Repeat for multiple fields.
+    #[arg(long = "clear-custom-field-link", value_name = "CUSTOM_FIELD")]
+    clear_custom_field_links: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1271,6 +1394,155 @@ fn resolve_item(client: &OpenProjectClient, path: &str, value: &str, kind: &str)
         _ => bail!("multiple {kind} values match {value:?}; use a numeric ID"),
     }
 }
+
+fn resolve_items(
+    client: &OpenProjectClient,
+    path: &str,
+    values: &[String],
+    kind: &str,
+) -> Result<Vec<u64>> {
+    if values.iter().all(|value| value.parse::<u64>().is_ok()) {
+        return values
+            .iter()
+            .map(|value| value.parse::<u64>().map_err(Into::into))
+            .collect();
+    }
+    let items = client.collection(path)?;
+    values
+        .iter()
+        .map(|value| {
+            if let Ok(number) = value.parse() {
+                return Ok(number);
+            }
+            let normalized_value = normalize(value);
+            let matches = items
+                .iter()
+                .filter(|item| {
+                    item.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| normalize(name) == normalized_value)
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [item] => id(item),
+                [] => bail!("no {kind} exactly matches {value:?}"),
+                _ => bail!("multiple {kind} values match {value:?}; use a numeric ID"),
+            }
+        })
+        .collect()
+}
+
+fn custom_field_key(value: &str) -> Result<String> {
+    let Some(number) = value.strip_prefix("customField") else {
+        bail!("custom field keys must use the OpenProject customFieldN property name")
+    };
+    if number.is_empty()
+        || !number.chars().all(|character| character.is_ascii_digit())
+        || number
+            .parse::<u64>()
+            .ok()
+            .filter(|number| *number > 0)
+            .is_none()
+    {
+        bail!("custom field keys must use the OpenProject customFieldN property name")
+    }
+    Ok(value.to_owned())
+}
+
+fn custom_field_operations(
+    scalar_values: &[String],
+    linked_values: &[String],
+    clear_scalar: &[String],
+    clear_linked: &[String],
+) -> Result<(Map<String, Value>, Map<String, Value>)> {
+    let mut properties = Map::new();
+    let mut links = Map::new();
+    let mut seen = HashSet::new();
+
+    for assignment in scalar_values {
+        let (key, raw) = assignment
+            .split_once('=')
+            .ok_or_else(|| anyhow!("custom fields must use customFieldN=JSON"))?;
+        let key = custom_field_key(key)?;
+        if !seen.insert(key.clone()) {
+            bail!("custom field {key} was supplied more than once");
+        }
+        let value = serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()));
+        properties.insert(key, value);
+    }
+    for assignment in linked_values {
+        let (key, href) = assignment
+            .split_once('=')
+            .ok_or_else(|| anyhow!("linked custom fields must use customFieldN=HREF"))?;
+        let key = custom_field_key(key)?;
+        if !seen.insert(key.clone()) {
+            bail!("custom field {key} was supplied more than once");
+        }
+        if !href.starts_with("/api/v3/") {
+            bail!("linked custom field hrefs must start with /api/v3/");
+        }
+        links.insert(key, json!({"href": href}));
+    }
+    for key in clear_scalar {
+        let key = custom_field_key(key)?;
+        if !seen.insert(key.clone()) {
+            bail!("custom field {key} was supplied more than once");
+        }
+        properties.insert(key, Value::Null);
+    }
+    for key in clear_linked {
+        let key = custom_field_key(key)?;
+        if !seen.insert(key.clone()) {
+            bail!("custom field {key} was supplied more than once");
+        }
+        links.insert(key, Value::Null);
+    }
+    Ok((properties, links))
+}
+
+fn updated_since_days(value: &str) -> Result<u32> {
+    let value = value.strip_suffix('d').unwrap_or(value);
+    let days = value
+        .parse::<u32>()
+        .context("--updated-since must be a positive day count such as 7 or 7d")?;
+    if days == 0 {
+        bail!("--updated-since must be at least one day");
+    }
+    Ok(days)
+}
+
+fn sort_criteria(values: &[String]) -> Result<Vec<Value>> {
+    values
+        .iter()
+        .map(|value| {
+            let (field, direction) = value.split_once(':').unwrap_or((value, "asc"));
+            let field = match field.to_ascii_lowercase().replace('_', "-").as_str() {
+                "id" => "id",
+                "type" => "type",
+                "status" => "status",
+                "priority" => "priority",
+                "subject" => "subject",
+                "assignee" => "assignee",
+                "responsible" => "responsible",
+                "start" | "start-date" => "startDate",
+                "due" | "due-date" => "dueDate",
+                "created" | "created-at" => "createdAt",
+                "updated" | "updated-at" => "updatedAt",
+                "percent" | "percentage-done" => "percentageDone",
+                "estimate" | "estimated-time" => "estimatedTime",
+                _ => bail!(
+                    "unsupported sort field {field:?}; use id, type, status, priority, subject, assignee, responsible, start-date, due-date, created-at, updated-at, percentage-done, or estimated-time"
+                ),
+            };
+            let direction = direction.to_ascii_lowercase();
+            if direction != "asc" && direction != "desc" {
+                bail!("sort direction must be asc or desc");
+            }
+            Ok(json!([field, direction]))
+        })
+        .collect()
+}
+
 fn time_entry_activity_values(form: &Value) -> Result<Vec<Value>> {
     let field = form
         .pointer("/_embedded/schema/activity")
@@ -1358,7 +1630,7 @@ fn resolve_user(client: &OpenProjectClient, value: &str) -> Result<u64> {
     }
     value
         .parse()
-        .map_err(|_| anyhow!("assignee must be a numeric user ID or 'me'"))
+        .map_err(|_| anyhow!("user must be a numeric ID or 'me'"))
 }
 fn duration(value: &str) -> Result<String> {
     let upper = value.to_ascii_uppercase();
@@ -1503,20 +1775,50 @@ fn relation_page(client: &OpenProjectClient, args: &ActivityArgs) -> Result<Valu
     Ok(page)
 }
 
-fn work_package_path(project_id: u64, args: &TasksArgs, assignee: Option<u64>) -> Result<String> {
+fn work_package_path(
+    project_id: u64,
+    args: &TasksArgs,
+    assignee: Option<u64>,
+    statuses: &[u64],
+    types: &[u64],
+    priorities: &[u64],
+) -> Result<String> {
     let mut filters = Vec::new();
-    if !args.all {
+    if statuses.is_empty() && !args.all {
         filters.push(json!({"status":{"operator":"o","values":[]}}));
+    }
+    if !statuses.is_empty() {
+        filters.push(json!({"status":{"operator":"=","values":statuses}}));
     }
     if let Some(assignee) = assignee {
         filters.push(json!({"assignee":{"operator":"=","values":[assignee]}}));
     }
+    if !types.is_empty() {
+        filters.push(json!({"type":{"operator":"=","values":types}}));
+    }
+    if !priorities.is_empty() {
+        filters.push(json!({"priority":{"operator":"=","values":priorities}}));
+    }
     if let Some(query) = &args.query {
         filters.push(json!({"subject":{"operator":"~","values":[query]}}));
+    }
+    if let Some(date) = &args.due_before {
+        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .context("--due-before must be YYYY-MM-DD")?;
+        filters.push(json!({"dueDate":{"operator":"<=d","values":[date]}}));
+    }
+    if let Some(value) = &args.updated_since {
+        filters.push(json!({"updatedAt":{"operator":">t-","values":[updated_since_days(value)?]}}));
     }
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     if !filters.is_empty() {
         serializer.append_pair("filters", &serde_json::to_string(&filters)?);
+    }
+    if !args.sort.is_empty() {
+        serializer.append_pair(
+            "sortBy",
+            &serde_json::to_string(&sort_criteria(&args.sort)?)?,
+        );
     }
     let query = serializer.finish();
     Ok(if query.is_empty() {
@@ -1629,6 +1931,19 @@ fn write_exact(
         Ok(json!({"dryRun":true,"method":method.as_str(),"path":path,"payload":body}))
     } else {
         client.request(method, path, Some(body))
+    }
+}
+
+fn write_without_body(
+    client: &OpenProjectClient,
+    cli: &Cli,
+    method: reqwest::Method,
+    path: &str,
+) -> Result<Value> {
+    if cli.dry_run {
+        Ok(json!({"dryRun":true,"method":method.as_str(),"path":path}))
+    } else {
+        client.request(method, path, None)
     }
 }
 
@@ -2160,6 +2475,26 @@ fn run(cli: &Cli) -> Result<()> {
             command: AuthCommands::Verify,
         } => emit(client.get("/users/me")?, cli.json),
         Commands::Projects(page) => emit(client.page("/projects", page)?, cli.json),
+        Commands::Statuses(page) => emit(client.page("/statuses", page)?, cli.json),
+        Commands::Priorities(page) => emit(client.page("/priorities", page)?, cli.json),
+        Commands::Types(args)
+        | Commands::Users(args)
+        | Commands::Versions(args)
+        | Commands::Categories(args) => {
+            let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
+            let project_id = id(&project)?;
+            let suffix = match &cli.command {
+                Commands::Types(_) => "types",
+                Commands::Users(_) => "available_assignees",
+                Commands::Versions(_) => "versions",
+                Commands::Categories(_) => "categories",
+                _ => unreachable!(),
+            };
+            emit(
+                client.page(&format!("/projects/{project_id}/{suffix}"), &args.page)?,
+                cli.json,
+            );
+        }
         Commands::Project(args) => {
             let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
             if args.bind {
@@ -2185,7 +2520,16 @@ fn run(cli: &Cli) -> Result<()> {
                 .as_deref()
                 .map(|value| resolve_user(&client, value))
                 .transpose()?;
-            let path = work_package_path(project_id, args, assignee)?;
+            let statuses = resolve_items(&client, "/statuses", &args.status, "status")?;
+            let types = resolve_items(
+                &client,
+                &format!("/projects/{project_id}/types"),
+                &args.types,
+                "type",
+            )?;
+            let priorities = resolve_items(&client, "/priorities", &args.priority, "priority")?;
+            let path =
+                work_package_path(project_id, args, assignee, &statuses, &types, &priorities)?;
             emit(
                 page_elements(&client.page(&path, &args.page)?, &client.host),
                 cli.json,
@@ -2211,24 +2555,143 @@ fn run(cli: &Cli) -> Result<()> {
             emit(time_entry_activities(&client, args.task_id)?, cli.json)
         }
         Commands::Relations(args) => emit(relation_page(&client, args)?, cli.json),
+        Commands::Relation { command } => match command {
+            RelationCommands::Add(args) => emit(
+                write(
+                    &client,
+                    cli,
+                    reqwest::Method::POST,
+                    &format!("/work_packages/{}/relations", args.from_id),
+                    json!({
+                        "type": args.r#type,
+                        "description": args.description,
+                        "lag": args.lag,
+                        "_links": {
+                            "to": {"href": format!("/api/v3/work_packages/{}", args.to)}
+                        }
+                    }),
+                )?,
+                cli.json,
+            ),
+            RelationCommands::Delete(args) => emit(
+                write_without_body(
+                    &client,
+                    cli,
+                    reqwest::Method::DELETE,
+                    &format!("/relations/{}", args.relation_id),
+                )?,
+                cli.json,
+            ),
+        },
         Commands::Create(args) => {
             let project = resolve_project(&client, &cli.cwd, &cfg, args.project.as_deref())?;
-            let type_id =
-                args.type_id
-                    .unwrap_or(resolve_item(&client, "/types", &args.r#type, "type")?);
+            let project_id = id(&project)?;
+            let type_id = match args.type_id {
+                Some(value) => value,
+                None => resolve_item(
+                    &client,
+                    &format!("/projects/{project_id}/types"),
+                    &args.r#type,
+                    "type",
+                )?,
+            };
             let assignee = args
                 .assignee
                 .as_deref()
                 .map(|a| resolve_user(&client, a))
                 .transpose()?;
-            let payload = json!({"subject":args.subject,"description":args.description.as_ref().map(|raw|json!({"format":"markdown","raw":raw})),"startDate":args.start_date,"dueDate":args.due_date,"estimatedTime":args.estimate.as_deref().map(duration).transpose()?,"_links":{"project":{"href":format!("/api/v3/projects/{}",id(&project)?)},"type":{"href":format!("/api/v3/types/{type_id}")},"assignee":assignee.map(|n|json!({"href":format!("/api/v3/users/{n}")}))}});
+            let priority = args
+                .priority
+                .as_deref()
+                .map(|value| resolve_item(&client, "/priorities", value, "priority"))
+                .transpose()?;
+            let responsible = args
+                .responsible
+                .as_deref()
+                .map(|value| resolve_user(&client, value))
+                .transpose()?;
+            let version = args
+                .version
+                .as_deref()
+                .map(|value| {
+                    resolve_item(
+                        &client,
+                        &format!("/projects/{project_id}/versions"),
+                        value,
+                        "version",
+                    )
+                })
+                .transpose()?;
+            let (custom_fields, custom_links) =
+                custom_field_operations(&args.custom_fields, &args.custom_field_links, &[], &[])?;
+            let mut links = Map::new();
+            links.insert(
+                "project".into(),
+                json!({"href":format!("/api/v3/projects/{project_id}")}),
+            );
+            links.insert(
+                "type".into(),
+                json!({"href":format!("/api/v3/types/{type_id}")}),
+            );
+            if let Some(value) = assignee {
+                links.insert(
+                    "assignee".into(),
+                    json!({"href":format!("/api/v3/users/{value}")}),
+                );
+            }
+            if let Some(value) = priority {
+                links.insert(
+                    "priority".into(),
+                    json!({"href":format!("/api/v3/priorities/{value}")}),
+                );
+            }
+            if let Some(value) = responsible {
+                links.insert(
+                    "responsible".into(),
+                    json!({"href":format!("/api/v3/users/{value}")}),
+                );
+            }
+            if let Some(value) = args.parent {
+                links.insert(
+                    "parent".into(),
+                    json!({"href":format!("/api/v3/work_packages/{value}")}),
+                );
+            }
+            if let Some(value) = version {
+                links.insert(
+                    "version".into(),
+                    json!({"href":format!("/api/v3/versions/{value}")}),
+                );
+            }
+            links.extend(custom_links);
+            let mut payload = custom_fields;
+            payload.insert("subject".into(), json!(args.subject));
+            payload.insert(
+                "description".into(),
+                args.description
+                    .as_ref()
+                    .map(|raw| json!({"format":"markdown","raw":raw}))
+                    .unwrap_or(Value::Null),
+            );
+            payload.insert("startDate".into(), json!(args.start_date));
+            payload.insert("dueDate".into(), json!(args.due_date));
+            payload.insert(
+                "estimatedTime".into(),
+                args.estimate
+                    .as_deref()
+                    .map(duration)
+                    .transpose()?
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+            payload.insert("_links".into(), Value::Object(links));
             emit(
                 write(
                     &client,
                     cli,
                     reqwest::Method::POST,
                     "/work_packages",
-                    payload,
+                    Value::Object(payload),
                 )?,
                 cli.json,
             );
@@ -2245,16 +2708,49 @@ fn run(cli: &Cli) -> Result<()> {
                 .as_deref()
                 .map(|a| resolve_user(&client, a))
                 .transpose()?;
+            let priority = args
+                .priority
+                .as_deref()
+                .map(|value| resolve_item(&client, "/priorities", value, "priority"))
+                .transpose()?;
+            let responsible = args
+                .responsible
+                .as_deref()
+                .map(|value| resolve_user(&client, value))
+                .transpose()?;
+            let version_path = href(&current, "project")
+                .map(|path| format!("{path}/versions"))
+                .unwrap_or_else(|| "/versions".to_owned());
+            let version = args
+                .version
+                .as_deref()
+                .map(|value| resolve_item(&client, &version_path, value, "version"))
+                .transpose()?;
+            let (custom_fields, custom_links) = custom_field_operations(
+                &args.custom_fields,
+                &args.custom_field_links,
+                &args.clear_custom_fields,
+                &args.clear_custom_field_links,
+            )?;
             if args.subject.is_none()
                 && args.description.is_none()
                 && status.is_none()
                 && assignee.is_none()
+                && priority.is_none()
+                && responsible.is_none()
+                && args.parent.is_none()
+                && version.is_none()
                 && args.percent.is_none()
                 && args.start_date.is_none()
                 && args.due_date.is_none()
                 && args.estimate.is_none()
+                && custom_fields.is_empty()
+                && custom_links.is_empty()
                 && !args.clear_description
                 && !args.clear_assignee
+                && !args.clear_responsible
+                && !args.clear_parent
+                && !args.clear_version
                 && !args.clear_start_date
                 && !args.clear_due_date
                 && !args.clear_estimate
@@ -2263,6 +2759,9 @@ fn run(cli: &Cli) -> Result<()> {
             }
             if args.assignee.is_some() && args.clear_assignee
                 || args.description.is_some() && args.clear_description
+                || args.responsible.is_some() && args.clear_responsible
+                || args.parent.is_some() && args.clear_parent
+                || args.version.is_some() && args.clear_version
                 || args.start_date.is_some() && args.clear_start_date
                 || args.due_date.is_some() && args.clear_due_date
                 || args.estimate.is_some() && args.clear_estimate
@@ -2285,7 +2784,41 @@ fn run(cli: &Cli) -> Result<()> {
             if args.clear_assignee {
                 links.insert("assignee".into(), Value::Null);
             }
-            let mut payload = Map::new();
+            if let Some(n) = priority {
+                links.insert(
+                    "priority".into(),
+                    json!({"href":format!("/api/v3/priorities/{n}")}),
+                );
+            }
+            if let Some(n) = responsible {
+                links.insert(
+                    "responsible".into(),
+                    json!({"href":format!("/api/v3/users/{n}")}),
+                );
+            }
+            if args.clear_responsible {
+                links.insert("responsible".into(), Value::Null);
+            }
+            if let Some(n) = args.parent {
+                links.insert(
+                    "parent".into(),
+                    json!({"href":format!("/api/v3/work_packages/{n}")}),
+                );
+            }
+            if args.clear_parent {
+                links.insert("parent".into(), Value::Null);
+            }
+            if let Some(n) = version {
+                links.insert(
+                    "version".into(),
+                    json!({"href":format!("/api/v3/versions/{n}")}),
+                );
+            }
+            if args.clear_version {
+                links.insert("version".into(), Value::Null);
+            }
+            links.extend(custom_links);
+            let mut payload = custom_fields;
             payload.insert(
                 "lockVersion".into(),
                 current.get("lockVersion").cloned().unwrap_or(Value::Null),
@@ -2409,6 +2942,7 @@ mod tests {
     use super::*;
     use clap::error::ErrorKind as ClapErrorKind;
     use std::cell::RefCell;
+    use std::collections::HashMap;
 
     fn object(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
@@ -2503,7 +3037,7 @@ mod tests {
         let Commands::Tasks(args) = cli.command else {
             panic!("expected tasks command");
         };
-        let path = work_package_path(13, &args, Some(7)).unwrap();
+        let path = work_package_path(13, &args, Some(7), &[], &[], &[]).unwrap();
         let filters = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
             .find_map(|(key, value)| (key == "filters").then_some(value.into_owned()))
             .unwrap();
@@ -2512,6 +3046,83 @@ mod tests {
         assert!(filters.contains("approval"));
         assert_eq!(args.page.limit, 25);
         assert_eq!(args.page.offset, 3);
+    }
+
+    #[test]
+    fn task_list_supports_advanced_filters_and_sorting() {
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "tasks",
+            "--status",
+            "In progress",
+            "--type",
+            "Bug",
+            "--priority",
+            "High",
+            "--due-before",
+            "2026-09-30",
+            "--updated-since",
+            "7d",
+            "--sort",
+            "priority:desc",
+            "--sort",
+            "updated-at:desc",
+        ])
+        .unwrap();
+        let Commands::Tasks(args) = cli.command else {
+            panic!("expected tasks command");
+        };
+
+        let path = work_package_path(13, &args, None, &[5], &[2], &[9]).unwrap();
+        let parameters = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+            .into_owned()
+            .collect::<HashMap<String, String>>();
+        let filters: Value = serde_json::from_str(&parameters["filters"]).unwrap();
+        let sort_by: Value = serde_json::from_str(&parameters["sortBy"]).unwrap();
+
+        assert_eq!(filters[0], json!({"status":{"operator":"=","values":[5]}}));
+        assert!(filters
+            .as_array()
+            .unwrap()
+            .contains(&json!({"dueDate":{"operator":"<=d","values":["2026-09-30"]}})));
+        assert!(filters
+            .as_array()
+            .unwrap()
+            .contains(&json!({"updatedAt":{"operator":">t-","values":[7]}})));
+        assert_eq!(
+            sort_by,
+            json!([["priority", "desc"], ["updatedAt", "desc"]])
+        );
+    }
+
+    #[test]
+    fn custom_field_operations_keep_scalar_and_link_values_separate() {
+        let (properties, links) = custom_field_operations(
+            &["customField1=true".into(), "customField2=Acme".into()],
+            &["customField3=/api/v3/users/14".into()],
+            &["customField4".into()],
+            &["customField5".into()],
+        )
+        .unwrap();
+
+        assert_eq!(properties["customField1"], json!(true));
+        assert_eq!(properties["customField2"], json!("Acme"));
+        assert!(properties["customField4"].is_null());
+        assert_eq!(links["customField3"], json!({"href":"/api/v3/users/14"}));
+        assert!(links["customField5"].is_null());
+    }
+
+    #[test]
+    fn duplicate_custom_field_operations_are_rejected() {
+        let error = custom_field_operations(
+            &["customField1=value".into()],
+            &[],
+            &["customField1".into()],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("supplied more than once"));
     }
 
     #[test]

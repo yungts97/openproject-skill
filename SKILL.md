@@ -1,6 +1,6 @@
 ---
 name: openproject
-description: Manage OpenProject projects and work packages through API v3. Use when a user asks to inspect, create, update, comment on, or log time against OpenProject work packages.
+description: Manage OpenProject projects and work packages through API v3. Use when a user asks to inspect, filter, create, update, comment on, relate, or log time against OpenProject work packages.
 metadata:
   short-description: Manage OpenProject work packages
 ---
@@ -67,7 +67,7 @@ Read repository guidance before external writes. Use an explicit `--project` whe
 - Prefer `--json` for reads and automation. Runtime failures use the JSON stderr shape `{"error":{"message":"..."}}` and a non-zero exit code.
 - Use `--dry-run --json` to review the method, API path, and payload when a write target or payload needs confirmation.
 - Only `auth login` prompts interactively. Do not infer that successful authentication authorizes a later write.
-- Resolve status, type, project, and user names exactly, or use numeric IDs when ambiguity is possible.
+- Resolve status, priority, type, version, project, and user names exactly, or use numeric IDs when ambiguity is possible.
 - Run `openproject COMMAND --help` rather than guessing unsupported arguments.
 
 ## Commands
@@ -75,16 +75,24 @@ Read repository guidance before external writes. Use an explicit `--project` whe
 ```bash
 openproject auth login
 openproject projects --json
+openproject statuses --json
+openproject priorities --json
 openproject project --project 13 --json
 openproject project --project 13 --bind --json
-openproject tasks --project 13 --assignee me --query approval --limit 50 --offset 1 --json
+openproject types --project 13 --json
+openproject users --project 13 --json
+openproject versions --project 13 --json
+openproject categories --project 13 --json
+openproject tasks --project 13 --assignee me --status "In progress" --priority High --due-before 2026-09-30 --updated-since 7d --sort updated-at:desc --limit 50 --json
 openproject task 123 --full --json
 openproject activities 123 --limit 50 --json
 openproject activity 456 --json
 openproject time-entry-activities 123 --json
 openproject relations 123 --json
-openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --dry-run --json
-openproject update 123 --status "In progress" --percent 40 --clear-due-date --dry-run --json
+openproject relation add 123 --to 456 --type blocks --dry-run --json
+openproject relation delete 789 --dry-run --json
+openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
+openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
@@ -93,17 +101,39 @@ openproject uninstall --dry-run --json
 openproject uninstall --purge --dry-run --json
 ```
 
+## Work recipes
+
+### Start work
+
+Use this recipe when the user asks to start or begin a work package:
+
+1. Resolve the repository project through the mandatory decision gate, then fetch `task TASK_ID --full --json` immediately before changing it.
+2. Determine the requested assignee and target status. Use `statuses --json` when the status name is not already exact; do not guess among multiple plausible workflow states.
+3. Preview `update TASK_ID --assignee me --status "In progress" --dry-run --json` when the target or payload still needs confirmation, then perform only the fields authorized by the user.
+4. Fetch the task again and report the resulting assignee and status.
+
+### Finish work
+
+Use this recipe when the user asks to finish or complete a work package:
+
+1. Fetch the work package and identify the exact completion status. If repository guidance and the available statuses do not determine one unambiguously, ask the user.
+2. If the requested completion comment refers to a Git commit, generate its safe URL with `commit-link` and include that link in the proposed comment.
+3. Treat the comment, status/progress update, and time entry as separate writes. The finish request authorizes only the parts it actually specifies; never invent time spent or a time-entry activity.
+4. Preview any write whose payload still requires confirmation. Fetch the work package again immediately before the final `update`, then verify and report the resulting state.
+
 ## Operational rules
 
-- Treat `create`, `update`, `comment`, and `log-time` as external writes; perform them only when the user explicitly requests that action.
+- Treat `create`, `update`, `comment`, `log-time`, and `relation add/delete` as external writes; perform them only when the user explicitly requests that action.
 - Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
 - Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
 - Before logging time, run `time-entry-activities TASK_ID --json`, present the activity names allowed by the time-entry form, and ask the user to choose one. Do not infer an activity when none was specified.
-- `tasks`, `projects`, `activities`, and `relations` are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
+- `tasks` supports repeated status, type, priority, and sort options. Repeated values within one filter are alternatives; different filters are conjunctive. `--updated-since` accepts a positive day count such as `7` or `7d`.
+- Collection commands are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
 - `activities` expands every entry to its full activity resource; use `activity ACTIVITY_ID` to retrieve a single entry directly. `relations TASK_ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links when present.
 - `task --full` returns the complete OpenProject representation; the default is a compact, agent-friendly summary.
-- Clear mutable values only with the deliberate `update --clear-description`, `--clear-assignee`, `--clear-start-date`, `--clear-due-date`, or `--clear-estimate` options. Do not combine a value with its corresponding clear option.
+- Clear mutable values only with the deliberate `update --clear-*` options. Do not combine a value with its corresponding clear option.
+- Custom fields require an explicit OpenProject `customFieldN` property obtained from a trusted schema, API response, user input, or repository guidance. Use `--custom-field customFieldN=JSON` for scalar values and `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for linked values; never infer the numeric key or field type.
 - `project --bind` writes the resolved numeric ID to `.openproject.json`. It is a local configuration write and still requires the user's explicit persistence approval; use `--dry-run` to preview its path and ID.
 - Send relationship values through `_links` with `href`.
 - Do not expose authorization headers, tokens, or secrets in output.
