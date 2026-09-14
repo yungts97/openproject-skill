@@ -1,6 +1,6 @@
 ---
 name: openproject
-description: Manage OpenProject projects and work packages through API v3. Use when a user asks to inspect, filter, create, update, comment on, relate, or log time against OpenProject work packages.
+description: Manage OpenProject projects and work packages through API v3. Use when a user asks to inspect, filter, create, update, comment on, relate, attach files to, download files from, or log time against OpenProject work packages.
 metadata:
   short-description: Manage OpenProject work packages
 ---
@@ -91,6 +91,11 @@ openproject time-entry-activities 123 --json
 openproject relations 123 --json
 openproject relation add 123 --to 456 --type blocks --dry-run --json
 openproject relation delete 789 --dry-run --json
+openproject attachments 123 --limit 50 --json
+openproject attachment show 901 --json
+openproject attachment upload 123 ./build.log --description "Build evidence" --dry-run --json
+openproject attachment download 901 --output ./build.log --json
+openproject attachment delete 901 --dry-run --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
@@ -123,7 +128,8 @@ Use this recipe when the user asks to finish or complete a work package:
 
 ## Operational rules
 
-- Treat `create`, `update`, `comment`, `log-time`, and `relation add/delete` as external writes; perform them only when the user explicitly requests that action.
+- Treat `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` as external writes; perform them only when the user explicitly requests that action. Attachment deletion is permanent.
+- Treat `attachment download` as a local filesystem write. Use `--dry-run` when the destination needs confirmation; the command defaults to the server filename in the current directory, refuses an existing file unless `--force` is explicit, and never follows a symbolic-link destination.
 - Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
 - Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
 - Fetch a work package immediately before an update so its `lockVersion` is current.
@@ -131,6 +137,7 @@ Use this recipe when the user asks to finish or complete a work package:
 - `tasks` supports repeated status, type, priority, and sort options. Repeated values within one filter are alternatives; different filters are conjunctive. `--updated-since` accepts a positive day count such as `7` or `7d`.
 - Collection commands are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
 - `activities` expands every entry to its full activity resource; use `activity ACTIVITY_ID` to retrieve a single entry directly. `relations TASK_ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links when present.
+- `attachments TASK_ID` lists work-package attachments. Use `attachment show` for metadata, `attachment upload` for a local regular file, and `attachment download` for content. Uploads default to the local basename and detected MIME type; do not invent `--name` or `--content-type` overrides.
 - `task --full` returns the complete OpenProject representation; the default is a compact, agent-friendly summary.
 - Clear mutable values only with the deliberate `update --clear-*` options. Do not combine a value with its corresponding clear option.
 - Custom fields require an explicit OpenProject `customFieldN` property obtained from a trusted schema, API response, user input, or repository guidance. Use `--custom-field customFieldN=JSON` for scalar values and `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for linked values; never infer the numeric key or field type.

@@ -1,10 +1,15 @@
+mod attachments;
+mod client;
+
 use anyhow::{anyhow, bail, Context, Result};
+use attachments::{AttachmentCommands, AttachmentsArgs};
 use chrono::Local;
 use clap::{Args, Parser, Subcommand};
+use client::OpenProjectClient;
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use regex::Regex;
-use reqwest::blocking::{Client as HttpClient, RequestBuilder};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LOCATION};
+use reqwest::blocking::Client as HttpClient;
+use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -20,7 +25,6 @@ use std::process::Stdio;
 use std::process::{Command, ExitCode};
 use url::Url;
 
-const API_ACCEPT: &str = "application/hal+json, application/json";
 const DEFAULT_RELEASE_REPOSITORY: &str = "yungts97/openproject-skill";
 const CREDENTIAL_SERVICE: &str = "openproject-cli";
 const EXAMPLE_HOST: &str = "https://openproject.example.com";
@@ -83,6 +87,13 @@ enum Commands {
     TimeEntryActivities(TimeEntryActivitiesArgs),
     /// List relations for a work package.
     Relations(ActivityArgs),
+    /// List attachments on a work package.
+    Attachments(AttachmentsArgs),
+    /// Inspect, upload, download, or delete attachments.
+    Attachment {
+        #[command(subcommand)]
+        command: AttachmentCommands,
+    },
     /// Create or delete work package relations.
     Relation {
         #[command(subcommand)]
@@ -376,138 +387,6 @@ struct CommitLinkArgs {
     remote: String,
     #[arg(long, default_value = "html", value_parser = ["html", "url", "json"])]
     format: String,
-}
-
-struct OpenProjectClient {
-    host: String,
-    base: String,
-    http: HttpClient,
-    token: String,
-}
-
-impl OpenProjectClient {
-    fn new(host: String, token: String) -> Result<Self> {
-        let host = canonical_host(&host)?;
-        Ok(Self {
-            base: format!("{host}/api/v3"),
-            host,
-            http: HttpClient::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?,
-            token,
-        })
-    }
-    fn url(&self, path: &str) -> Result<String> {
-        if path.starts_with("http://") || path.starts_with("https://") {
-            let url = Url::parse(path)?;
-            let expected = Url::parse(&self.host)?;
-            if url.scheme() != expected.scheme()
-                || url.host_str() != expected.host_str()
-                || url.port_or_known_default() != expected.port_or_known_default()
-            {
-                bail!("refusing to send credentials to a different host");
-            }
-            return Ok(path.to_owned());
-        }
-        Ok(if path.starts_with("/api/v3/") || path == "/api/v3" {
-            format!("{}{}", self.host, path)
-        } else {
-            format!("{}/{}", self.base, path.trim_start_matches('/'))
-        })
-    }
-    fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
-        let url = self.url(path)?;
-        let retries = if method == reqwest::Method::GET { 2 } else { 0 };
-        let mut attempt = 0;
-        let response = loop {
-            let mut request: RequestBuilder = self
-                .http
-                .request(method.clone(), &url)
-                .header(ACCEPT, API_ACCEPT)
-                .header(AUTHORIZATION, format!("Bearer {}", self.token));
-            if let Some(payload) = &body {
-                request = request
-                    .header(CONTENT_TYPE, "application/json")
-                    .json(payload);
-            }
-            match request.send() {
-                Ok(response)
-                    if attempt < retries
-                        && (response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                            || response.status().is_server_error()) =>
-                {
-                    let wait = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or(1)
-                        .min(10);
-                    std::thread::sleep(std::time::Duration::from_secs(wait));
-                    attempt += 1;
-                }
-                Ok(response) => break response,
-                Err(error) if attempt < retries => {
-                    attempt += 1;
-                    std::thread::sleep(std::time::Duration::from_secs(attempt));
-                    if attempt > retries {
-                        return Err(error).context("cannot connect to OpenProject");
-                    }
-                }
-                Err(error) => return Err(error).context("cannot connect to OpenProject"),
-            }
-        };
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
-        if !status.is_success() {
-            let detail = serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|v| {
-                    v.get("message")
-                        .or_else(|| v.get("errorIdentifier"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or(text);
-            bail!("OpenProject HTTP {}: {}", status.as_u16(), detail);
-        }
-        if text.trim().is_empty() {
-            return Ok(json!({}));
-        }
-        serde_json::from_str(&text).context("OpenProject returned invalid JSON")
-    }
-    fn get(&self, path: &str) -> Result<Value> {
-        self.request(reqwest::Method::GET, path, None)
-    }
-    fn collection(&self, path: &str) -> Result<Vec<Value>> {
-        let mut next = format!("{}?pageSize=100", path);
-        let mut items = Vec::new();
-        loop {
-            let page = self.get(&next)?;
-            if let Some(elements) = page
-                .pointer("/_embedded/elements")
-                .and_then(Value::as_array)
-            {
-                items.extend(elements.iter().cloned());
-            }
-            match page
-                .pointer("/_links/nextByOffset/href")
-                .and_then(Value::as_str)
-            {
-                Some(link) => next = link.to_owned(),
-                None => break,
-            }
-        }
-        Ok(items)
-    }
-    fn page(&self, path: &str, page: &PageArgs) -> Result<Value> {
-        let query = format!("pageSize={}&offset={}", page.limit, page.offset);
-        self.get(&format!(
-            "{path}{}{}",
-            if path.contains('?') { "&" } else { "?" },
-            query
-        ))
-    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -1831,6 +1710,7 @@ fn item_label(item: &Value) -> Option<&str> {
     item.get("subject")
         .or_else(|| item.get("name"))
         .or_else(|| item.get("title"))
+        .or_else(|| item.get("fileName"))
         .or_else(|| item.pointer("/_links/self/title"))
         .or_else(|| item.pointer("/comment/raw"))
         .and_then(Value::as_str)
@@ -2555,6 +2435,19 @@ fn run(cli: &Cli) -> Result<()> {
             emit(time_entry_activities(&client, args.task_id)?, cli.json)
         }
         Commands::Relations(args) => emit(relation_page(&client, args)?, cli.json),
+        Commands::Attachments(args) => emit(attachments::list(&client, args)?, cli.json),
+        Commands::Attachment { command } => match command {
+            AttachmentCommands::Show(args) => emit(attachments::show(&client, args)?, cli.json),
+            AttachmentCommands::Upload(args) => {
+                emit(attachments::upload(&client, args, cli.dry_run)?, cli.json)
+            }
+            AttachmentCommands::Download(args) => {
+                emit(attachments::download(&client, args, cli.dry_run)?, cli.json)
+            }
+            AttachmentCommands::Delete(args) => {
+                emit(attachments::delete(&client, args, cli.dry_run)?, cli.json)
+            }
+        },
         Commands::Relation { command } => match command {
             RelationCommands::Add(args) => emit(
                 write(
@@ -3093,6 +2986,69 @@ mod tests {
             sort_by,
             json!([["priority", "desc"], ["updatedAt", "desc"]])
         );
+    }
+
+    #[test]
+    fn attachment_commands_parse_the_public_interface() {
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "attachments",
+            "42",
+            "--limit",
+            "25",
+            "--offset",
+            "2",
+        ])
+        .unwrap();
+        let Commands::Attachments(args) = cli.command else {
+            panic!("expected attachments command");
+        };
+        assert_eq!(args.task_id, 42);
+        assert_eq!(args.page.limit, 25);
+        assert_eq!(args.page.offset, 2);
+
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "attachment",
+            "upload",
+            "42",
+            "proof.txt",
+            "--name",
+            "evidence.txt",
+            "--content-type",
+            "text/plain",
+        ])
+        .unwrap();
+        let Commands::Attachment {
+            command: AttachmentCommands::Upload(args),
+        } = cli.command
+        else {
+            panic!("expected attachment upload command");
+        };
+        assert_eq!(args.task_id, 42);
+        assert_eq!(args.file, PathBuf::from("proof.txt"));
+        assert_eq!(args.name.as_deref(), Some("evidence.txt"));
+        assert_eq!(args.content_type.as_deref(), Some("text/plain"));
+
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "attachment",
+            "download",
+            "9",
+            "--output",
+            "download.txt",
+            "--force",
+        ])
+        .unwrap();
+        let Commands::Attachment {
+            command: AttachmentCommands::Download(args),
+        } = cli.command
+        else {
+            panic!("expected attachment download command");
+        };
+        assert_eq!(args.attachment_id, 9);
+        assert_eq!(args.output, Some(PathBuf::from("download.txt")));
+        assert!(args.force);
     }
 
     #[test]

@@ -219,6 +219,11 @@ Global options may be supplied before or after a subcommand.
 | `relations TASK_ID [--limit N] [--offset N]` | List ordinary relations in which a work package is involved, plus its parent/child hierarchy links |
 | `relation add FROM_ID --to TO_ID [OPTIONS]` | Create a typed relation, optionally with a description and lag |
 | `relation delete RELATION_ID` | Delete a relation; supports the global `--dry-run` preview |
+| `attachments TASK_ID [--limit N] [--offset N]` | List one page of files attached to a work package |
+| `attachment show ATTACHMENT_ID` | Show complete metadata for one attachment |
+| `attachment upload TASK_ID FILE [OPTIONS]` | Upload a file, with optional remote name, description, and MIME type |
+| `attachment download ATTACHMENT_ID [OPTIONS]` | Download to `--output` or the server filename without overwriting by default |
+| `attachment delete ATTACHMENT_ID` | Permanently delete an attachment; supports the global `--dry-run` preview |
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
 | `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
 | `comment TASK_ID --message TEXT` | Add an activity comment |
@@ -249,6 +254,11 @@ openproject time-entry-activities 123 --json
 openproject relations 123 --json
 openproject relation add 123 --to 456 --type blocks --dry-run --json
 openproject relation delete 789 --dry-run --json
+openproject attachments 123 --limit 50 --json
+openproject attachment show 901 --json
+openproject attachment upload 123 ./build.log --description "Build evidence" --dry-run --json
+openproject attachment download 901 --output ./build.log --json
+openproject attachment delete 901 --dry-run --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
 openproject comment 123 --message "Implemented the API change."
@@ -272,8 +282,10 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - `--updated-since` accepts a positive day count such as `7` or `7d`. `--sort` accepts a documented field with optional `asc` or `desc` and may be repeated for secondary sorting.
 - `--clear-description`, `--clear-assignee`, `--clear-responsible`, `--clear-parent`, `--clear-version`, `--clear-start-date`, `--clear-due-date`, `--clear-estimate`, and the custom-field clear options intentionally send a null value. A clear option cannot be combined with its corresponding value option.
 - `project --bind` is an explicit local write to `.openproject.json`; agents must still obtain the repository-binding approval described in the Agent Skill. Its `--dry-run` output previews the target file and resolved ID without writing.
+- Attachment uploads use the local basename and detected MIME type unless `--name` or `--content-type` overrides them. Downloads use the server filename in the current directory unless `--output` supplies an exact path, refuse existing files unless `--force` is set, and never follow symbolic-link destinations.
+- Attachment downloads are streamed to a temporary file and moved into place only after completion and any available size check. Credentials are sent only to the configured OpenProject origin, not to cross-origin file-storage URLs or redirects.
 - `--version`, `--help`, `commit-link`, `upgrade`, and `uninstall` do not require OpenProject credentials.
-- Treat `create`, `update`, `comment`, `log-time`, and `relation add/delete` as external writes and run them only after the user authorizes the specific action.
+- Treat `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` as external writes and run them only after the user authorizes the specific action. Attachment deletion is permanent.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.
 
 ## Private GitLab release mirrors
