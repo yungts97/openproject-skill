@@ -9,12 +9,12 @@ The CLI supports Linux, macOS, and Windows on x86-64 and ARM64. It provides huma
 Paste this into Claude Code, OpenCode, Pi, Codex, or another agent that supports Agent Skills:
 
 ```text
-Install the OpenProject Agent Skill and CLI by following https://raw.githubusercontent.com/yungts97/openproject-skill/main/INSTALL-WITH-AN-AGENT.md. Use its raw platform installer commands: they install the single `SKILL.md` file into the agent's skill directory and install the CLI.
+Install the OpenProject Agent Skill and CLI by following https://raw.githubusercontent.com/yungts97/openproject-skill/main/INSTALL-WITH-AN-AGENT.md. Use its raw platform installer commands: they install `SKILL.md` and its supporting `references/` into the agent's skill directory and install the CLI.
 ```
 
 ## Manual installation
 
-Run one command for your platform. It downloads the installer, matching CLI artifact, and Agent Skill from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verifies both release files against `SHA256SUMS` before installing them.
+Run one command for your platform. It downloads the installer, matching CLI artifact, and Agent Skill from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verifies every release file against `SHA256SUMS` before installing them.
 
 On Linux or macOS:
 
@@ -28,7 +28,7 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
 
-The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The skill is installed to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it to `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available.
+The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The complete skill (`SKILL.md` plus `references/`) is installed under `~/.agents/skills/openproject/`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it under `~/.claude/skills/openproject/`. Older releases with a self-contained `SKILL.md` remain supported. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available.
 
 When the default CLI directory is not persistently configured, the Unix installer adds one idempotent entry to the login shell's startup file and the PowerShell installer updates both the user PATH and its current process. Set `OPENPROJECT_NO_MODIFY_PATH=1` to opt out. Custom Unix destinations are left for you to add manually so the installer never writes an arbitrary value into a shell startup file.
 

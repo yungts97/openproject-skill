@@ -1,6 +1,6 @@
 # Install OpenProject with an agent
 
-These instructions are for the coding agent performing the installation. The OpenProject Agent Skill is the single `SKILL.md` file; the platform installer places it in the agent's user-level skill directory and installs the platform-specific CLI.
+These instructions are for the coding agent performing the installation. The OpenProject Agent Skill consists of `SKILL.md` and its `references/` directory; the platform installer places them in the agent's user-level skill directory and installs the platform-specific CLI.
 
 ## Installation
 
@@ -24,7 +24,7 @@ These instructions are for the coding agent performing the installation. The Ope
 
    `OPENPROJECT_NO_AUTH_PROMPT=1` prevents an agent-owned pseudo-terminal from waiting for secret input; it does not skip the authentication handoff below. For a requested Unix version, append it through `sh`, for example `curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | OPENPROJECT_NO_AUTH_PROMPT=1 sh -s -- 0.1.3`. On PowerShell, download the script to a temporary file and invoke it with `-Version`.
 
-2. The installer downloads and verifies both the platform-specific CLI and the release-pinned `SKILL.md`. It writes the skill to `~/.agents/skills/openproject/SKILL.md`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, it also writes `~/.claude/skills/openproject/SKILL.md`. Set `OPENPROJECT_SKILL_DIR` (or `-SkillDestination` in PowerShell) to select another user-level skill directory.
+2. The installer downloads and verifies the platform-specific CLI and every release-pinned skill file. It writes `SKILL.md` and `references/` under `~/.agents/skills/openproject/`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, it also installs the complete skill under `~/.claude/skills/openproject/`. Set `OPENPROJECT_SKILL_DIR` (or `-SkillDestination` in PowerShell) to select another user-level skill directory. Older releases with a self-contained `SKILL.md` remain supported.
 3. Read the installed `SKILL.md`. Build the CLI from source only when no compatible release artifact is available.
 4. Respect the environment's permission and approval requirements. Stop if a download, permission request, platform check, or checksum verification fails; do not bypass the failed safeguard.
 5. Verify the CLI with `openproject --version` and `openproject --help`, and confirm its resolved executable path. The installer automatically persists its directory in PATH when possible. The current agent process may still have the old PATH, so use the absolute executable path for verification when necessary. If automatic PATH setup reports a failure or a custom Unix destination requires manual setup, report that remaining action exactly.

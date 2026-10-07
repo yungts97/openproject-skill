@@ -1,178 +1,30 @@
 ---
 name: openproject
-description: Manage OpenProject projects and work packages through API v3. Use for daily work briefings, deciding what to work on today in OpenProject, or requests to inspect, filter, create, update, comment on, relate, attach files to, download files from, or log time against work packages.
+description: Manage OpenProject projects and work packages with the openproject CLI. Use for task queries, daily briefings, and requested work-package changes.
 metadata:
   short-description: Manage OpenProject work packages
 ---
 
 # OpenProject
 
-Use the bundled `openproject` CLI. It is portable and non-interactive by default; only `openproject auth login` prompts deliberately for local credential setup.
+Use the `openproject` CLI for OpenProject API v3 work. Prefer `--json`; inspect `openproject COMMAND --help` for flags rather than guessing. Only `auth login` is interactive.
 
-## Installation and setup
+## Load the relevant guidance
 
-Check availability with `openproject --version`. If the executable or this Agent Skill is missing, explain that the platform installer downloads the release-pinned CLI and skill and verifies their SHA-256 checksums, then obtain approval before running `scripts/install.sh` on Linux/macOS or `scripts/install.ps1` on Windows.
+- **Project-scoped work:** read [project selection](references/project-selection.md) to resolve the host, repository binding, and any required selection/persistence decision before querying the project. Reuse the user's existing decision.
+- **Daily briefing or what to work on today:** read [daily briefing](references/daily-briefing.md). This is a read-only workflow, not a CLI subcommand.
+- **Changes to work packages, time, relations, or attachments:** read [work-package operations](references/work-packages.md) for command-specific constraints and start/finish workflows.
+- **Missing CLI, failed authentication, installation, upgrade, or removal:** read [setup](references/setup.md).
 
-The installer adds its default executable directory to the user's PATH when needed. On Unix it appends one idempotent entry to the login shell's startup file; on Windows it updates the user PATH and the current PowerShell process. Set `OPENPROJECT_NO_MODIFY_PATH=1` only when startup files or the user PATH must remain unchanged.
+Read only the references relevant to the request. Ordinary reads can use `projects`, `project`, `tasks`, `task`, `statuses`, `priorities`, `types`, `users`, `versions`, and `categories` directly once the project is resolved.
 
-After a new installation, make authentication an explicit setup handoff. A user-run installer offers to launch `openproject auth login` immediately, including the documented `curl | sh` flow. For agent or other non-interactive installations, use `OPENPROJECT_NO_AUTH_PROMPT=1`, show the user the installer's absolute `auth login` command, and ask them to run it in their own interactive terminal. Never handle their token. After they finish, verify setup with `openproject auth status --json`; do not describe OpenProject as ready before authentication succeeds.
+## Essential operating constraints
 
-Upgrade an existing executable with `openproject upgrade`, optionally followed by a version without the leading `v`. Use `openproject upgrade --dry-run --json` when the source or destination needs review. Rerunning the platform installer also detects and upgrades an existing executable. Obtain approval before either upgrade path because it downloads and replaces the local executable.
+- Execute only the requested scope. `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` are external writes and require an explicit user request for that action. Authentication and a briefing request do not authorize them. Honor authorization already given; use `--dry-run --json` when the target or payload still needs review rather than asking again for an approved action.
+- Repository binding (`project --bind` or editing `.openproject.json`), attachment downloads, executable replacement, and uninstall are separate local writes. Binding requires a persistence decision; upgrade and uninstall require requests for those actions. Attachment deletion is permanent; `uninstall --purge` requires explicit complete-cleanup intent.
+- Resolve names exactly or use numeric IDs. Read repository guidance relevant to the requested write. Fetch a work package immediately before updating it so its `lockVersion` is current, then verify the resulting state. Report separate writes separately if only part of the request succeeds.
+- Collections are paginated: use a bounded `--limit`, follow `next` using the same filters and one-based `--offset`, and deduplicate by ID. Finish collection before claiming exhaustive totals or an empty result; disclose incomplete reads. `tasks` defaults to open statuses unless `--all` or `--status` is supplied. `task --full` returns the API representation; compact output omits fields such as priority and update timestamps.
+- Keep tokens and authorization headers out of chat, command arguments, and repository files. For missing credentials, direct the user to run `openproject auth login` in their own terminal and verify with `auth status --json` afterward.
+- After an uncertain write outcome, inspect the server state before retrying. Do not blindly repeat creates, comments, time entries, or uploads; stop and report uncertainty if the outcome cannot be established. Runtime errors return a nonzero exit code and JSON stderr shaped as `{"error":{"message":"..."}}`.
 
-The public skill source is the repository root of `yungts97/openproject-skill`. The platform installer installs the CLI and skill together; set `OPENPROJECT_SKILL_DIR` when the agent requires a nonstandard user-level skill directory. Users with a private GitLab mirror may set `OPENPROJECT_GITLAB_PROJECT`, optionally `OPENPROJECT_GITLAB_HOST`, and use their existing `glab` login.
-
-Remove the executable with `openproject uninstall`. Use `--dry-run` first when the resolved executable path needs review. This preserves configuration and the separately installed Agent Skill; remove the skill through the agent or skill manager that installed it. Use `openproject uninstall --purge` only when the user explicitly requests complete local cleanup: it removes global configuration and the stored credential for the configured host. When that is the final protected-file credential, it removes `credentials.json` as well; credentials for other hosts remain. Repository `.openproject.json` files and the separately installed Agent Skill are always preserved. If global configuration is missing or invalid, pass `--host` to identify the credential to remove.
-
-Authentication is persistent. Never ask the user to paste a token into chat, print it, place it in command arguments, or write it to repository configuration. If authentication fails, run `openproject auth status --json`. If no credential exists, tell the user: `Run openproject auth login once in this environment.` Use the absolute executable path when PATH is not active in the current process. The CLI uses a system credential manager where suitable and a protected credential file fallback for agent, WSL, SSH, headless, and container-friendly environments.
-
-For CI, headless machines, and temporary sessions without accessible saved credentials, the user can supply a token through the process environment:
-
-```bash
-export OPENPROJECT_TOKEN="opapi-..."
-openproject auth verify
-```
-
-## Configuration and project resolution
-
-The host resolves from `--host`, `OPENPROJECT_URL`, project configuration, then global configuration.
-
-The global configuration is `openproject/config.json` under the platform config directory: XDG config on Linux, Application Support on macOS, or AppData on Windows. It accepts only a non-secret `host`:
-
-```json
-{"host":"https://openproject.example.com"}
-```
-
-Project configuration is `.openproject.json` at the Git root and may set `host` plus `project_id` or the compatibility key `project`:
-
-```json
-{"host":"https://openproject.example.com","project_id":13}
-```
-
-### Current-directory project detection
-
-At the start of work that needs a project, find the Git root (or use the current directory when outside a Git repository) and inspect its `.openproject.json`. If it contains a valid `project_id`, treat that as the repository's project binding and use it by default for all later project-scoped OpenProject queries relevant to this repository. Run `openproject project --cwd . --json` (or pass the known repository root as `--cwd`) to resolve and verify the configured project.
-
-**Mandatory decision gate:** If the repository configuration has no valid `project_id`, do not run the user's project-scoped command yet—even for a read such as `openproject tasks`. First resolve a project using the process below, then obtain the user's project-selection and persistence decision. Authentication, directory-name matching, and a CLI-resolved default never authorize silently using or persisting a repository project binding. `openproject project --cwd . --json` and `openproject projects --json` are permitted only to perform this resolution.
-
-If `.openproject.json` is missing or does not contain `project_id`, let the CLI use local project evidence to attempt an exact normalized match against an OpenProject project name or identifier. Evidence includes the project directory name, the current directory name, the first README heading, and a `name` from common manifests (`Cargo.toml`, `pyproject.toml`, `package.json`, or `composer.json`). If necessary, inspect `openproject projects --json`. Accept an exact result only when all matching evidence identifies one project. When no exact match exists, use the CLI's related-project suggestions (shared meaningful words or a contained project name) only as candidates to show the user; never select a related project, search arbitrary README text, or make a speculative match.
-
-When an exact project is found, stop before running the requested project-scoped command. Tell the user its name and ID and present explicit choices for the repository-root `.openproject.json` decision; do not ask an open-ended question. Offer: **Yes — create/update with this project ID**, **No — use it only for this request**, and **Use a different project ID — let the user type an ID**. Do not create or modify the file without the user's permission. If the current request already explicitly authorizes this configuration change, do not ask again. Once authorized, create the file when absent or update it when present, preserving `host` and other supported settings, then use the persisted `project_id` for subsequent relevant queries. If they choose use-once, run the requested command with an explicit `--project <resolved-id>` and do not write the file. Treat this local configuration change separately from OpenProject API writes.
-
-If the match is missing or ambiguous, show the viable candidates and present explicit choices: one choice per candidate, **Use a different project ID — let the user type an ID**, and **Do not select a project**. After a project is selected or typed, present the same explicit persistence choices: **Yes — create/update `.openproject.json` with this ID** or **No — use it only for this request**. If they decline persistence, do not write the file; use an explicit `--project` only for the current request.
-
-Read repository guidance before external writes. Use an explicit `--project` when guidance supplies one; it overrides the directory default for that command.
-
-## Agent-friendly operation
-
-- Prefer `--json` for reads and automation. Runtime failures use the JSON stderr shape `{"error":{"message":"..."}}` and a non-zero exit code.
-- Use `--dry-run --json` to review the method, API path, and payload when a write target or payload needs confirmation.
-- Only `auth login` prompts interactively. Do not infer that successful authentication authorizes a later write.
-- Resolve status, priority, type, version, project, and user names exactly, or use numeric IDs when ambiguity is possible.
-- Run `openproject COMMAND --help` rather than guessing unsupported arguments.
-
-## Commands
-
-```bash
-openproject auth login
-openproject projects --json
-openproject statuses --json
-openproject priorities --json
-openproject project --project 13 --json
-openproject project --project 13 --bind --json
-openproject types --project 13 --json
-openproject users --project 13 --json
-openproject versions --project 13 --json
-openproject categories --project 13 --json
-openproject tasks --project 13 --assignee me --status "In progress" --priority High --due-before 2026-09-30 --updated-since 7d --sort updated-at:desc --limit 50 --json
-openproject task 123 --full --json
-openproject activities 123 --limit 50 --json
-openproject activity 456 --json
-openproject time-entry-activities 123 --json
-openproject relations 123 --json
-openproject relation add 123 --to 456 --type blocks --dry-run --json
-openproject relation delete 789 --dry-run --json
-openproject attachments 123 --limit 50 --json
-openproject attachment show 901 --json
-openproject attachment upload 123 ./build.log --description "Build evidence" --dry-run --json
-openproject attachment download 901 --output ./build.log --json
-openproject attachment delete 901 --dry-run --json
-openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
-openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
-openproject comment 123 --message "Implemented the API change."
-openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
-openproject commit-link HEAD --format url
-openproject upgrade --dry-run --json
-openproject uninstall --dry-run --json
-openproject uninstall --purge --dry-run --json
-```
-
-## Work recipes
-
-### Daily work briefing
-
-Use this recipe for requests such as "Give me my daily OpenProject briefing", "What should I work on today?" in an OpenProject context, or "Show my overdue tasks and blockers". Produce a read-only briefing in chat using the existing CLI.
-
-#### Scope and collection
-
-1. Resolve the repository project through the project-selection and persistence decision gate above. Default to that project and `--assignee me`; honor an explicitly requested project, assignee, or team scope. Do not silently expand to other projects or all assignees.
-2. Establish today's calendar date in the user's timezone from the session context. If it is unavailable, use the environment's local date and timezone and state that assumption. Default the upcoming window to tomorrow through today plus seven calendar days, inclusive; honor a requested window. OpenProject due dates are calendar dates, not UTC timestamps.
-3. Collect open assigned tasks, including those without due dates:
-
-   ```bash
-   openproject tasks --project PROJECT_ID --assignee me --sort due-date:asc --sort priority:desc --limit 50 --offset 1 --json
-   ```
-
-   Replace `PROJECT_ID` with the resolved ID. For another assignee, resolve their exact identity with `users --project PROJECT_ID --json` and pass the numeric ID; omit `--assignee` only for an explicitly requested whole-project/team scope. `tasks` defaults to open statuses when neither `--all` nor `--status` is supplied. Do not use `--all`, a guessed status filter, `--due-before`, or `--updated-since` for this baseline: those can include closed work or omit undated and older active work.
-4. Follow `next` with the same filters and limit, incrementing the one-based `--offset`, and deduplicate by task ID. Complete pagination before claiming totals or an empty workload. If a user-specified limit or a failed read stops collection, report the fetched count and remaining/unknown coverage and label the briefing partial.
-5. Fetch `task TASK_ID --full --json` for details needed to rank or explain candidates. Compact task output omits priority and update timestamps; never invent those values. Use `statuses --limit 50 --json` and its remaining pages when needed to identify closed states from `isClosed` and to interpret the actual workflow. Use repository guidance or fetched status names to identify work in progress; do not assume every project calls it "In progress".
-
-#### Deadlines, blockers, and recommendations
-
-- Classify open tasks as **overdue** when `dueDate` is before today, **due today** when equal, and **upcoming** when tomorrow through the window end. Keep undated tasks eligible for active-work recommendations. Exclude work found to be closed on a subsequent detail read.
-- For today's recommendation candidates, inspect `relations TASK_ID --limit 50 --json` and its remaining pages. Interpret `_links.from`, `_links.to`, and `type`: `blocks` means from blocks to; `blocked` means from is blocked by to. Fetch the blocking task and check its status before describing an unresolved blocker. Parent/child, `relates`, and duplicate links do not themselves prove a blocker. Describe scheduling predecessors as dependencies rather than treating them as explicit blocking relations.
-- Name and link each verified blocker, including its assignee when available. If a blocker is inaccessible or its state is unknown, say it could not be verified. Scope blocker conclusions to the tasks actually inspected; never turn failed or incomplete reads into "no blockers". Read recent `activities` only when needed to clarify a candidate, and attribute any blocker reported in a comment to that comment rather than presenting it as a verified relation.
-- Recommend up to three concrete next actions using due-date urgency, verified priority, current work in progress, start dates, and dependencies. Prefer actionable work and avoid recommending starting tasks scheduled for a future date; for a blocked urgent task, recommend following up with the blocker owner rather than starting dependent work. Explain each choice briefly and flag overdue work scheduled to start later as a scheduling conflict. Treat this ranking as advice, not a change to OpenProject priority or status.
-
-#### Briefing output
-
-Lead with the project, assignee scope, local date/timezone, and upcoming window. Show a short **Today** list of recommended actions, then concise **Deadlines**, **Active work**, and **Blockers** lists or a compact table as useful. Each task entry should use its returned `url` and include its ID, subject, status, due date when present, and a brief reason or next action. For tasks fetched only in full form, build the link from the resolved host and `/work_packages/TASK_ID`.
-
-Include overdue, due-today, and upcoming counts only for completely fetched scopes; distinguish display truncation from collection truncation. State any failed reads, unverified statuses, or limited blocker checks. If the complete task collection is empty, say there are no open tasks assigned to the requested user in that project. Offer recommendations only; updates, comments, assignments, and time logging follow the existing external-write authorization rules.
-
-### Start work
-
-Use this recipe when the user asks to start or begin a work package:
-
-1. Resolve the repository project through the mandatory decision gate, then fetch `task TASK_ID --full --json` immediately before changing it.
-2. Determine the requested assignee and target status. Use `statuses --json` when the status name is not already exact; do not guess among multiple plausible workflow states.
-3. Preview `update TASK_ID --assignee me --status "In progress" --dry-run --json` when the target or payload still needs confirmation, then perform only the fields authorized by the user.
-4. Fetch the task again and report the resulting assignee and status.
-
-### Finish work
-
-Use this recipe when the user asks to finish or complete a work package:
-
-1. Fetch the work package and identify the exact completion status. If repository guidance and the available statuses do not determine one unambiguously, ask the user.
-2. If the requested completion comment refers to a Git commit, generate its safe URL with `commit-link` and include that link in the proposed comment.
-3. Treat the comment, status/progress update, and time entry as separate writes. The finish request authorizes only the parts it actually specifies; never invent time spent or a time-entry activity.
-4. Preview any write whose payload still requires confirmation. Fetch the work package again immediately before the final `update`, then verify and report the resulting state.
-
-## Operational rules
-
-- Treat `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` as external writes; perform them only when the user explicitly requests that action. Attachment deletion is permanent.
-- Treat `attachment download` as a local filesystem write. Use `--dry-run` when the destination needs confirmation; the command defaults to the server filename in the current directory, refuses an existing file unless `--force` is explicit, and never follows a symbolic-link destination.
-- Treat `upgrade` as a local executable replacement; run it only when the user explicitly requests an upgrade.
-- Treat `uninstall` as a destructive local action; run it only when the user explicitly requests removal of the executable. `--purge` additionally removes global configuration and securely stored credentials.
-- Fetch a work package immediately before an update so its `lockVersion` is current.
-- Before logging time, run `time-entry-activities TASK_ID --json`, present the activity names allowed by the time-entry form, and ask the user to choose one. Do not infer an activity when none was specified.
-- `tasks` supports repeated status, type, priority, and sort options. Repeated values within one filter are alternatives; different filters are conjunctive. `--updated-since` accepts a positive day count such as `7` or `7d`.
-- Collection commands are paginated. Prefer a bounded `--limit`, inspect the returned `next` link, and use `--offset` to request another page.
-- `activities` expands every entry to its full activity resource; use `activity ACTIVITY_ID` to retrieve a single entry directly. `relations TASK_ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links when present.
-- `attachments TASK_ID` lists work-package attachments. Use `attachment show` for metadata, `attachment upload` for a local regular file, and `attachment download` for content. Uploads default to the local basename and detected MIME type; do not invent `--name` or `--content-type` overrides.
-- `task --full` returns the complete OpenProject representation; the default is a compact, agent-friendly summary.
-- Clear mutable values only with the deliberate `update --clear-*` options. Do not combine a value with its corresponding clear option.
-- Custom fields require an explicit OpenProject `customFieldN` property obtained from a trusted schema, API response, user input, or repository guidance. Use `--custom-field customFieldN=JSON` for scalar values and `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for linked values; never infer the numeric key or field type.
-- `project --bind` writes the resolved numeric ID to `.openproject.json`. It is a local configuration write and still requires the user's explicit persistence approval; use `--dry-run` to preview its path and ID.
-- Send relationship values through `_links` with `href`.
-- Do not expose authorization headers, tokens, or secrets in output.
-- If a comment or description includes a Git commit, use `openproject commit-link` to generate a clickable link when the remote can be safely resolved.
+Complete the authorized request through verification. Report relevant IDs, clickable task URLs, resulting changes, and any unresolved or partial results. A preview is sufficient only when the user requested a preview or a missing decision prevents execution.

@@ -103,6 +103,20 @@ function Install-AgentSkill {
 
   $SkillStaged = Join-Path $SkillDirectory ".SKILL.md.new.$PID"
   try {
+    # Publish the entrypoint only after its supporting files are installed.
+    foreach ($Reference in $SkillReferences) {
+      $ReferenceDirectory = Join-Path $SkillDirectory "references"
+      New-Item -ItemType Directory -Force -Path $ReferenceDirectory | Out-Null
+      $ReferenceStaged = Join-Path $ReferenceDirectory ".$Reference.md.new.$PID"
+      try {
+        Copy-Item -LiteralPath (Join-Path $Temporary "openproject-agent-$Reference.md") -Destination $ReferenceStaged -Force
+        Move-Item -LiteralPath $ReferenceStaged -Destination (Join-Path $ReferenceDirectory "$Reference.md") -Force
+      } finally {
+        if (Test-Path -LiteralPath $ReferenceStaged) {
+          Remove-Item -LiteralPath $ReferenceStaged -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
     Copy-Item -LiteralPath (Join-Path $Temporary $SkillAsset) -Destination $SkillStaged -Force
     Move-Item -LiteralPath $SkillStaged -Destination $SkillFile -Force
   } finally {
@@ -184,6 +198,7 @@ $Target = switch ($Architecture) {
 $Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)
 $Archive = "openproject-$Target.zip"
 $SkillAsset = "openproject-agent-skill.md"
+$SkillReferences = @()
 $Checksums = "SHA256SUMS"
 $Executable = Join-Path $Destination "openproject.exe"
 $Action = if (Test-Path -LiteralPath $Executable) { "Upgraded" } else { "Installed" }
@@ -288,6 +303,32 @@ try {
     Confirm-Checksum $Archive
   }
   Confirm-Checksum $SkillAsset
+
+  # Older releases have a self-contained entrypoint and no reference assets.
+  if (Select-String -LiteralPath (Join-Path $Temporary $SkillAsset) -SimpleMatch "(references/" -Quiet) {
+    $SkillReferences = @("project-selection", "daily-briefing", "work-packages", "setup")
+    foreach ($Reference in $SkillReferences) {
+      $ReferenceAsset = "openproject-agent-$Reference.md"
+      if ($env:OPENPROJECT_GITLAB_PROJECT) {
+        $ReferenceArguments = @("release", "download", $RequestedVersion)
+        if ($env:OPENPROJECT_GITLAB_HOST) {
+          $ReferenceArguments += @("--hostname", $env:OPENPROJECT_GITLAB_HOST)
+        }
+        $ReferenceArguments += @("--repo", $env:OPENPROJECT_GITLAB_PROJECT, "--pattern", $ReferenceAsset, "--dir", $Temporary)
+        & glab @ReferenceArguments
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not download $ReferenceAsset from GitLab."
+        }
+      } else {
+        try {
+          Invoke-WebRequest "$Base/$ReferenceAsset" -OutFile (Join-Path $Temporary $ReferenceAsset)
+        } catch {
+          throw "Could not download $ReferenceAsset. The release may be incomplete. $($_.Exception.Message)"
+        }
+      }
+      Confirm-Checksum $ReferenceAsset
+    }
+  }
 
   if ($CliCurrent) {
     Write-Step 4 "Keeping the current OpenProject CLI"

@@ -101,6 +101,7 @@ esac
 TARGET="${ARCH}-${OS}"
 ARCHIVE="openproject-${TARGET}.tar.gz"
 SKILL_ASSET="openproject-agent-skill.md"
+SKILL_REFERENCES=""
 CHECKSUMS="SHA256SUMS"
 EXECUTABLE="$DESTINATION/openproject"
 STAGED=""
@@ -150,6 +151,15 @@ install_skill() {
 
   mkdir -p "$SKILL_DIRECTORY" || fail "Could not create $SKILL_DIRECTORY. Set OPENPROJECT_SKILL_DIR to a writable Agent Skills directory."
   [ -w "$SKILL_DIRECTORY" ] || fail "$SKILL_DIRECTORY is not writable. Set OPENPROJECT_SKILL_DIR to a writable Agent Skills directory."
+  # Install supporting files before publishing the entrypoint that links to them.
+  for REFERENCE in $SKILL_REFERENCES; do
+    REFERENCE_DIRECTORY="$SKILL_DIRECTORY/references"
+    mkdir -p "$REFERENCE_DIRECTORY" || fail "Could not create $REFERENCE_DIRECTORY."
+    STAGED="$REFERENCE_DIRECTORY/.$REFERENCE.md.new.$$"
+    cp "$TEMP_DIR/openproject-agent-$REFERENCE.md" "$STAGED" || fail "Could not stage $REFERENCE.md."
+    mv -f "$STAGED" "$REFERENCE_DIRECTORY/$REFERENCE.md" || fail "Could not replace $REFERENCE.md."
+    STAGED=""
+  done
   STAGED="$SKILL_DIRECTORY/.SKILL.md.new.$$"
   cp "$TEMP_DIR/$SKILL_ASSET" "$STAGED" || fail "Could not stage the OpenProject Agent Skill in $SKILL_DIRECTORY."
   mv -f "$STAGED" "$SKILL_FILE" || fail "Could not replace $SKILL_FILE."
@@ -380,6 +390,24 @@ fi
 step 3 "Verifying SHA-256 checksums"
 [ "$CLI_CURRENT" -eq 1 ] || verify_checksum "$ARCHIVE"
 verify_checksum "$SKILL_ASSET"
+
+# Older releases have a self-contained entrypoint and no reference assets.
+if grep -q '(references/' "$TEMP_DIR/$SKILL_ASSET"; then
+  SKILL_REFERENCES="project-selection daily-briefing work-packages setup"
+  for REFERENCE in $SKILL_REFERENCES; do
+    REFERENCE_ASSET="openproject-agent-$REFERENCE.md"
+    if [ -n "${OPENPROJECT_GITLAB_PROJECT:-}" ]; then
+      if [ -n "${OPENPROJECT_GITLAB_HOST:-}" ]; then
+        glab release download "$REQUESTED_VERSION" --hostname "$OPENPROJECT_GITLAB_HOST" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$REFERENCE_ASSET" --dir "$TEMP_DIR" || fail "Could not download $REFERENCE_ASSET from GitLab."
+      else
+        glab release download "$REQUESTED_VERSION" --repo "$OPENPROJECT_GITLAB_PROJECT" --pattern "$REFERENCE_ASSET" --dir "$TEMP_DIR" || fail "Could not download $REFERENCE_ASSET from GitLab."
+      fi
+    else
+      curl --fail --location --silent --show-error "$BASE/$REFERENCE_ASSET" --output "$TEMP_DIR/$REFERENCE_ASSET" || fail "Could not download $REFERENCE_ASSET. The release may be incomplete."
+    fi
+    verify_checksum "$REFERENCE_ASSET"
+  done
+fi
 
 if [ "$CLI_CURRENT" -eq 1 ]; then
   step 4 "Keeping the current OpenProject CLI"

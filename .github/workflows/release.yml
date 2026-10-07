@@ -68,6 +68,11 @@ jobs:
           path: release
           merge-multiple: true
       - run: cp SKILL.md release/openproject-agent-skill.md
+      - name: Package skill references
+        run: |
+          for reference in references/*.md; do
+            cp "$reference" "release/openproject-agent-$(basename "$reference")"
+          done
       - working-directory: release
         run: sha256sum openproject-* > SHA256SUMS
       - uses: softprops/action-gh-release@v2
