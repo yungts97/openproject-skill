@@ -269,6 +269,20 @@ openproject uninstall --dry-run --json
 openproject uninstall --purge --dry-run --json
 ```
 
+## Daily work briefing
+
+Ask an agent with the OpenProject skill installed:
+
+```text
+Give me my daily OpenProject briefing.
+What should I work on today in this project's OpenProject tasks?
+Show my overdue tasks, upcoming deadlines, and blockers.
+```
+
+The skill uses the existing CLI to produce a read-only briefing in chat. It defaults to your open assigned work in the repository's resolved project and uses your local date and timezone. The briefing covers overdue work, tasks due today, deadlines over the next seven calendar days, active work, and verified blockers for recommendation candidates, with task links and up to three suggested next actions. You can request a different project, assignee, team scope, or deadline window.
+
+Task collections are paginated before reporting totals; incomplete reads and limited blocker checks are disclosed. Project selection still follows the skill's repository-binding decision gate. The briefing is an agent workflow, not a new CLI subcommand, and does not change work packages.
+
 ## Agent-friendly operation
 
 All commands except `auth login` remain non-interactive, making them suitable for coding agents and automation.
