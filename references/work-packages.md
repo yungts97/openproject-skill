@@ -14,6 +14,19 @@ Remove `--dry-run` when the target/payload are settled and authorized, then fetc
 
 **Finish work:** identify the exact completion status from repository guidance and available statuses; ask only if it remains ambiguous. Comments, status/progress updates, and time entries are separate writes, authorized only to the extent the request specifies. Never invent hours or a time-entry activity. Fetch the work package immediately before the final update and verify the result. For a requested comment/description referring to a Git commit, use `openproject commit-link HEAD --format url` (or the requested commit) for a safe clickable URL when its remote is resolvable.
 
+## Delete a work package
+
+`delete TASK_ID` permanently deletes the work package and associated time entries. The server also deletes its entire child hierarchy. Use only for an explicitly requested deletion of an exact work-package ID; authorization to update or finish work does not authorize deletion.
+
+```bash
+openproject delete 123 --dry-run --json
+openproject delete 123 --cascade --dry-run --json
+```
+
+The command fetches the task first. OpenProject omits `_links.children` when there are no visible children; the CLI treats that as an empty list. It refuses deletion if `_links` is missing or invalid, or if a present `children` value is not an array. It requires `--cascade` when the API reports child links, even in a dry run. The preview includes the target summary, visible direct child links, cascade flag, and a permanent-deletion warning; it performs reads but never sends DELETE. Remove `--dry-run` once the target and scope are authorized. Use `--cascade` only when deletion of the entire child hierarchy and its time entries is authorized; never add it automatically to bypass an error.
+
+The check reflects API visibility at read time. Hidden children and hierarchy changes between GET and DELETE cannot be ruled out, and `--cascade` covers all descendants, not just previewed links. The server enforces deletion permissions. Success returns `deleted: true`, `taskId`, and `cascade`. Verify with `task ID --full --json`: expect HTTP 404, which means absent or no longer visible. After an uncertain DELETE outcome, inspect the state before retrying and report uncertainty if absence cannot be established.
+
 ## Fields and filtering
 
 - Resolve project, user, type, status, priority, and version names exactly or use IDs. Relationship values in API payloads use `_links` with `href`.

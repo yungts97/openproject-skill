@@ -226,6 +226,7 @@ Global options may be supplied before or after a subcommand.
 | `attachment delete ATTACHMENT_ID` | Permanently delete an attachment; supports the global `--dry-run` preview |
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
 | `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
+| `delete TASK_ID [--cascade]` | Permanently delete a work package and associated time entries; requires `--cascade` when the API reports children and supports `--dry-run` |
 | `comment TASK_ID --message TEXT` | Add an activity comment |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity name or ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
@@ -261,6 +262,8 @@ openproject attachment download 901 --output ./build.log --json
 openproject attachment delete 901 --dry-run --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
+openproject delete 123 --dry-run --json
+openproject delete 123 --cascade --dry-run --json
 openproject comment 123 --message "Implemented the API change."
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
@@ -291,6 +294,8 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - Successful commands exit with code `0`. Runtime failures exit with code `1`; argument errors use Clap's non-zero exit behavior.
 - With `--json`, runtime failures are written to stderr as `{"error":{"message":"..."}}`.
 - Use `--dry-run --json` to inspect write requests before submitting them.
+- `delete TASK_ID` fetches the work package before sending DELETE. OpenProject omits `_links.children` when there are no visible children; the CLI treats that as an empty list. It refuses deletion when `_links` is missing or invalid, or when a present `children` value is not an array. If child links are present, `--cascade` is required, including for dry runs. A dry run performs the read and returns the target summary, visible direct child links, cascade flag, and permanent-deletion warning without sending DELETE. Successful deletion returns `deleted`, `taskId`, and `cascade`.
+- Work-package deletion permanently removes the entire child hierarchy and associated time entries, as documented by the [OpenProject API](https://www.openproject.org/docs/api/endpoints/work-packages/). The children check uses links visible to the authenticated user; it cannot detect hidden children or prevent hierarchy changes between GET and DELETE. `--cascade` authorizes the entire hierarchy, not just the previewed links. The server enforces the delete-work-package permission.
 - Collection commands return one page by default. Use `--limit` and `--offset`; task-list output includes `next`, `total`, and page metadata.
 - `tasks` sends all filters and sorting to OpenProject instead of downloading and filtering work packages locally. Repeating `--status`, `--type`, or `--priority` creates an OR list within that field; different fields are combined with AND.
 - `--updated-since` accepts a positive day count such as `7` or `7d`. `--sort` accepts a documented field with optional `asc` or `desc` and may be repeated for secondary sorting.
@@ -299,7 +304,7 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - Attachment uploads use the local basename and detected MIME type unless `--name` or `--content-type` overrides them. Downloads use the server filename in the current directory unless `--output` supplies an exact path, refuse existing files unless `--force` is set, and never follow symbolic-link destinations.
 - Attachment downloads are streamed to a temporary file and moved into place only after completion and any available size check. Credentials are sent only to the configured OpenProject origin, not to cross-origin file-storage URLs or redirects.
 - `--version`, `--help`, `commit-link`, `upgrade`, and `uninstall` do not require OpenProject credentials.
-- Treat `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` as external writes and run them only after the user authorizes the specific action. Attachment deletion is permanent.
+- Treat `create`, `update`, `delete`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` as external writes and run them only after the user authorizes the specific action. Work-package and attachment deletion are permanent.
 - Resolve projects and named entities explicitly; never guess when multiple OpenProject values match.
 
 ## Private GitLab release mirrors

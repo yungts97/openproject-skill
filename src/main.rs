@@ -103,6 +103,8 @@ enum Commands {
     Create(CreateArgs),
     /// Update a work package.
     Update(UpdateArgs),
+    /// Permanently delete a work package and its associated time entries.
+    Delete(DeleteArgs),
     /// Add an activity comment.
     Comment {
         task_id: u64,
@@ -203,6 +205,15 @@ struct TaskArgs {
     /// Return the complete API representation instead of a compact summary.
     #[arg(long)]
     full: bool,
+}
+
+#[derive(Args, Debug)]
+struct DeleteArgs {
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    task_id: u64,
+    /// Also allow permanent deletion of all child work packages and their time entries.
+    #[arg(long)]
+    cascade: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1827,6 +1838,42 @@ fn write_without_body(
     }
 }
 
+fn delete_work_package(client: &OpenProjectClient, cli: &Cli, args: &DeleteArgs) -> Result<Value> {
+    let path = format!("/work_packages/{}", args.task_id);
+    let task = client.get(&path)?;
+    let links = task
+        .get("_links")
+        .and_then(Value::as_object)
+        .context("cannot check work package children: response has no valid links object")?;
+    // OpenProject omits this link when there are no visible children.
+    let children = match links.get("children") {
+        None => &[][..],
+        Some(value) => value
+            .as_array()
+            .context("cannot check work package children: response has no valid children array")?
+            .as_slice(),
+    };
+    if !children.is_empty() && !args.cascade {
+        bail!(
+            "work package {} has child work packages; use --cascade to authorize permanent deletion of its entire child hierarchy and associated time entries",
+            args.task_id
+        );
+    }
+    if cli.dry_run {
+        return Ok(json!({
+            "dryRun": true,
+            "method": "DELETE",
+            "path": path,
+            "task": task_summary(&task, &client.host),
+            "cascade": args.cascade,
+            "children": children,
+            "warning": "Deletion is permanent and removes the work package, its entire child hierarchy, and associated time entries. Child links reflect API visibility at the time of this preview."
+        }));
+    }
+    write_without_body(client, cli, reqwest::Method::DELETE, &path)?;
+    Ok(json!({"deleted": true, "taskId": args.task_id, "cascade": args.cascade}))
+}
+
 fn commit_link(cwd: &Path, args: &CommitLinkArgs) -> Result<Value> {
     let commit = git(
         cwd,
@@ -2426,6 +2473,7 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.json,
             );
         }
+        Commands::Delete(args) => emit(delete_work_package(&client, cli, args)?, cli.json),
         Commands::Activities(args) => emit(activity_page(&client, args)?, cli.json),
         Commands::Activity(args) => emit(
             client.get(&format!("/activities/{}", args.activity_id))?,
@@ -2910,6 +2958,237 @@ mod tests {
                 format!("openproject {}\n", env!("CARGO_PKG_VERSION"))
             );
         }
+    }
+
+    #[test]
+    fn delete_command_requires_a_positive_id_and_accepts_cascade() {
+        for args in [
+            vec!["openproject", "delete"],
+            vec!["openproject", "delete", "0"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let cli = Cli::try_parse_from([
+            "openproject",
+            "delete",
+            "42",
+            "--cascade",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Commands::Delete(args) = cli.command else {
+            panic!("expected delete command");
+        };
+        assert_eq!(args.task_id, 42);
+        assert!(args.cascade && cli.dry_run && cli.json);
+    }
+
+    fn mock_work_package_deletion(
+        task: Value,
+        cascade: bool,
+        dry_run: bool,
+        delete_status: u16,
+    ) -> (Result<Value>, Vec<String>) {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let server_finished = Arc::clone(&finished);
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            while !server_finished.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("cannot accept request: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let (status, body) = if request.starts_with("GET ") {
+                    (200, task.to_string())
+                } else {
+                    (
+                        delete_status,
+                        if delete_status == 204 {
+                            String::new()
+                        } else {
+                            json!({"message": "You are not allowed to delete this work package."})
+                                .to_string()
+                        },
+                    )
+                };
+                requests.push(request);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Response\r\nContent-Type: application/hal+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let client =
+            OpenProjectClient::new(format!("http://{address}"), "test-token".into()).unwrap();
+        let cli = Cli::try_parse_from(["openproject", "delete", "42"]).unwrap();
+        let cli = Cli { dry_run, ..cli };
+        let result = delete_work_package(
+            &client,
+            &cli,
+            &DeleteArgs {
+                task_id: 42,
+                cascade,
+            },
+        );
+        finished.store(true, Ordering::SeqCst);
+        (result, server.join().unwrap())
+    }
+
+    #[test]
+    fn work_package_deletion_guards_children_and_handles_empty_success() {
+        for (children, cascade, allowed) in [
+            (json!([]), false, true),
+            (
+                json!([{ "href": "/api/v3/work_packages/43" }]),
+                false,
+                false,
+            ),
+            (json!([{ "href": "/api/v3/work_packages/43" }]), true, true),
+        ] {
+            let (result, requests) = mock_work_package_deletion(
+                json!({"id": 42, "_links": {"children": children}}),
+                cascade,
+                false,
+                204,
+            );
+            assert!(requests[0].starts_with("GET /api/v3/work_packages/42 "));
+            if allowed {
+                assert_eq!(
+                    result.unwrap(),
+                    json!({"deleted": true, "taskId": 42, "cascade": cascade})
+                );
+                assert_eq!(requests.len(), 2);
+                assert!(requests[1].starts_with("DELETE /api/v3/work_packages/42 "));
+                assert!(requests[1]
+                    .to_ascii_lowercase()
+                    .contains("content-type: application/json"));
+            } else {
+                assert!(result.unwrap_err().to_string().contains("--cascade"));
+                assert_eq!(requests.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn work_package_deletion_accepts_omitted_children_links_for_leaf_tasks() {
+        // The actual API omits children, rather than rendering an empty array.
+        let task = json!({
+            "id": 42,
+            "subject": "Leaf task",
+            "_links": {"self": {"href": "/api/v3/work_packages/42"}}
+        });
+        for dry_run in [true, false] {
+            let (result, requests) = mock_work_package_deletion(task.clone(), false, dry_run, 204);
+            let result = result.unwrap();
+            if dry_run {
+                assert_eq!(result["dryRun"], true);
+                assert_eq!(result["children"], json!([]));
+                assert_eq!(requests.len(), 1);
+            } else {
+                assert_eq!(
+                    result,
+                    json!({"deleted": true, "taskId": 42, "cascade": false})
+                );
+                assert_eq!(requests.len(), 2);
+                assert!(requests[1].starts_with("DELETE /api/v3/work_packages/42 "));
+            }
+        }
+    }
+
+    #[test]
+    fn work_package_delete_dry_run_reads_and_never_deletes() {
+        for (children, cascade) in [
+            (json!([]), false),
+            (json!([{ "href": "/api/v3/work_packages/43" }]), true),
+        ] {
+            let (result, requests) = mock_work_package_deletion(
+                json!({"id": 42, "subject": "Duplicate task", "_links": {"children": children}}),
+                cascade,
+                true,
+                204,
+            );
+            let preview = result.unwrap();
+            assert_eq!(preview["dryRun"], true);
+            assert_eq!(preview["path"], "/work_packages/42");
+            assert_eq!(preview["task"]["subject"], "Duplicate task");
+            assert_eq!(preview["children"], children);
+            assert_eq!(preview["cascade"], cascade);
+            assert!(preview["warning"]
+                .as_str()
+                .unwrap()
+                .contains("time entries"));
+            assert_eq!(requests.len(), 1);
+        }
+        let (result, requests) = mock_work_package_deletion(
+            json!({"id": 42, "_links": {"children": [{"href": "/api/v3/work_packages/43"}]}}),
+            false,
+            true,
+            204,
+        );
+        assert!(result.unwrap_err().to_string().contains("--cascade"));
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[test]
+    fn work_package_deletion_fails_closed_on_unknown_children_and_reports_permission_errors() {
+        for task in [
+            json!({"id": 42}),
+            json!({"_links": null}),
+            json!({"_links": []}),
+            json!({"_links": {"children": null}}),
+            json!({"_links": {"children": {}}}),
+        ] {
+            for cascade in [false, true] {
+                let (result, requests) =
+                    mock_work_package_deletion(task.clone(), cascade, false, 204);
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot check work package children"));
+                assert_eq!(requests.len(), 1);
+            }
+        }
+        let (result, requests) = mock_work_package_deletion(
+            json!({"id": 42, "_links": {"children": []}}),
+            false,
+            false,
+            403,
+        );
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("HTTP 403"));
+        assert!(error_payload(&error)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not allowed to delete"));
+        assert_eq!(requests.len(), 2, "failed DELETE must not be retried");
     }
 
     #[test]

@@ -13,14 +13,14 @@ Use the `openproject` CLI for OpenProject API v3 work. Prefer `--json`; inspect 
 
 - **Project-scoped work:** read [project selection](references/project-selection.md) to resolve the host, repository binding, and any required selection/persistence decision before querying the project. Reuse the user's existing decision.
 - **Daily briefing or what to work on today:** read [daily briefing](references/daily-briefing.md). This is a read-only workflow, not a CLI subcommand.
-- **Changes to work packages, time, relations, or attachments:** read [work-package operations](references/work-packages.md) for command-specific constraints and start/finish workflows.
+- **Changes to work packages, time, relations, or attachments:** read [work-package operations](references/work-packages.md) for command-specific constraints, deletion behavior, and start/finish workflows.
 - **Missing CLI, failed authentication, installation, upgrade, or removal:** read [setup](references/setup.md).
 
 Read only the references relevant to the request. Ordinary reads can use `projects`, `project`, `tasks`, `task`, `statuses`, `priorities`, `types`, `users`, `versions`, and `categories` directly once the project is resolved.
 
 ## Essential operating constraints
 
-- Execute only the requested scope. `create`, `update`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` are external writes and require an explicit user request for that action. Authentication and a briefing request do not authorize them. Honor authorization already given; use `--dry-run --json` when the target or payload still needs review rather than asking again for an approved action.
+- Execute only the requested scope. `create`, `update`, `delete`, `comment`, `log-time`, `relation add/delete`, and `attachment upload/delete` are external writes and require an explicit user request for that action. Authentication and a briefing request do not authorize them. Work-package deletion permanently removes associated time entries and its child hierarchy; use `--cascade` only when that entire hierarchy is authorized. Honor authorization already given; use `--dry-run --json` when the target or payload still needs review rather than asking again for an approved action.
 - Repository binding (`project --bind` or editing `.openproject.json`), attachment downloads, executable replacement, and uninstall are separate local writes. Binding requires a persistence decision; upgrade and uninstall require requests for those actions. Attachment deletion is permanent; `uninstall --purge` requires explicit complete-cleanup intent.
 - Resolve names exactly or use numeric IDs. Read repository guidance relevant to the requested write. Fetch a work package immediately before updating it so its `lockVersion` is current, then verify the resulting state. Report separate writes separately if only part of the request succeeds.
 - Collections are paginated: use a bounded `--limit`, follow `next` using the same filters and one-based `--offset`, and deduplicate by ID. Finish collection before claiming exhaustive totals or an empty result; disclose incomplete reads. `tasks` defaults to open statuses unless `--all` or `--status` is supplied. `task --full` returns the API representation; compact output omits fields such as priority and update timestamps.

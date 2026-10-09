@@ -66,6 +66,10 @@ impl OpenProjectClient {
                 .request(method.clone(), &url)
                 .header(ACCEPT, API_ACCEPT)
                 .header(AUTHORIZATION, format!("Bearer {}", self.token));
+            // OpenProject requires a Content-Type header even for bodyless DELETEs.
+            if method == reqwest::Method::DELETE {
+                request = request.header(CONTENT_TYPE, "application/json");
+            }
             if let Some(payload) = &body {
                 request = request
                     .header(CONTENT_TYPE, "application/json")
