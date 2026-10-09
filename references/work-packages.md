@@ -51,6 +51,24 @@ openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation
 
 `activities ID` expands each entry to its full activity resource; `activity ACTIVITY_ID` fetches one directly. Read activities only when relevant.
 
+## Comments
+
+Use `comments TASK_ID` for focused discussion history. It includes nonempty comments attached to change activities as well as standalone comments, in API activity order. `--author` takes a numeric user ID or `me`; `--since` takes a positive number of preceding 24-hour days (`7` or `7d`) and filters creation time, not edit time.
+
+```bash
+openproject comments 123 --author me --since 7d --limit 25 --json
+openproject comment 123 --message "Implemented the API change." --dry-run --json
+openproject comment 123 --message-file ./update.md --dry-run --json
+openproject comment 123 --message-file - --dry-run --json < ./update.md
+openproject comment edit 456 --message "Corrected implementation details." --dry-run --json
+```
+
+Comment listing scans and deduplicates activity pages so filtering does not lose matches. Pagination applies to matching comments: use the returned `nextOffset` with the same `--limit` and filters until it is null. `total` is null when more matches exist; it is exact only after the end of history is reached. A filtered empty page at the end is a complete result, but a read failure or broken pagination must not be treated as proof that no comments exist. History changes between invocations can shift pages.
+
+Adding and editing each require exactly one of `--message` or `--message-file`. File/stdin input must be UTF-8; `--message-file -` requires piped or redirected stdin. Preserve user-provided Markdown and whitespace; empty or whitespace-only input is refused.
+
+Editing is an external write that requires an explicit request to replace the text of that exact comment. Use the **activity ID**, not its work-package ID. The CLI reads the activity first, requires a nonempty comment and an update link, then PATCHes only the text. It preserves internal visibility and change details. Edit dry runs perform the read but never PATCH; add dry runs never POST. After a requested edit, verify with `activity ACTIVITY_ID --json`. As with new comments, do not blindly retry an edit after an uncertain write outcome; inspect the current text first.
+
 ## Relations
 
 `relations ID` returns relations where the task is either endpoint, plus separate `hierarchy` parent/child links. Interpret `_links.from`, `_links.to`, and `type`: `blocks` means from blocks to; `blocked` means from is blocked by to. Verify the blocking task's state before declaring an unresolved blocker. Parent/child, duplicate, and `relates` links do not prove blocking; scheduling predecessors are dependencies.

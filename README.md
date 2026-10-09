@@ -215,6 +215,7 @@ Global options may be supplied before or after a subcommand.
 | `task TASK_ID [--full]` | Show a compact work-package summary, or its complete API representation with `--full` |
 | `activities TASK_ID [--limit N] [--offset N]` | List a work package's activity/history entries with complete activity details |
 | `activity ACTIVITY_ID` | Show one activity with its comment and change details |
+| `comments TASK_ID [--author ID_OR_ME] [--since DAYS] [--limit N] [--offset N]` | List a filtered page of comments, including comments attached to change activities |
 | `time-entry-activities TASK_ID` | List the activity names and IDs allowed by the work package’s time-entry form |
 | `relations TASK_ID [--limit N] [--offset N]` | List ordinary relations in which a work package is involved, plus its parent/child hierarchy links |
 | `relation add FROM_ID --to TO_ID [OPTIONS]` | Create a typed relation, optionally with a description and lag |
@@ -227,7 +228,8 @@ Global options may be supplied before or after a subcommand.
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
 | `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
 | `delete TASK_ID [--cascade]` | Permanently delete a work package and associated time entries; requires `--cascade` when the API reports children and supports `--dry-run` |
-| `comment TASK_ID --message TEXT` | Add an activity comment |
+| `comment TASK_ID (--message TEXT \| --message-file PATH)` | Add a Markdown comment; use `--message-file -` for piped or redirected stdin |
+| `comment edit ACTIVITY_ID (--message TEXT \| --message-file PATH)` | Replace an existing comment's text while preserving its visibility and activity details |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity name or ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
 | `upgrade [VERSION]` | Upgrade to the latest release, or to a specific version without the leading `v` |
@@ -251,6 +253,7 @@ openproject tasks --project 13 --assignee me --status "In progress" --priority H
 openproject task 123 --full --json
 openproject activities 123 --limit 50 --json
 openproject activity 456 --json
+openproject comments 123 --author me --since 7d --limit 25 --json
 openproject time-entry-activities 123 --json
 openproject relations 123 --json
 openproject relation add 123 --to 456 --type blocks --dry-run --json
@@ -265,12 +268,25 @@ openproject update 123 --status "In progress" --percent 40 --responsible me --cl
 openproject delete 123 --dry-run --json
 openproject delete 123 --cascade --dry-run --json
 openproject comment 123 --message "Implemented the API change."
+openproject comment 123 --message-file ./update.md --dry-run --json
+openproject comment 123 --message-file - --dry-run --json < ./update.md
+openproject comment edit 456 --message "Corrected implementation details." --dry-run --json
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
 openproject uninstall --dry-run --json
 openproject uninstall --purge --dry-run --json
 ```
+
+## Work-package comments
+
+`comment TASK_ID --message TEXT` remains supported. Both adding and editing accept exactly one of `--message` or `--message-file`; files and stdin must contain UTF-8 text. Markdown, line breaks, and surrounding whitespace are preserved, but empty or whitespace-only input is rejected. `--message-file -` requires piped or redirected stdin and never opens an interactive prompt.
+
+`comment edit ACTIVITY_ID` uses an activity ID from `comments`, `activities`, or `activity`, rather than a work-package ID. It reads the activity first and requires an existing nonempty comment and the API's update link. The server enforces edit permissions. Only the comment text is patched; visibility, change details, and work-package fields are preserved. A dry run performs that read and previews the PATCH without sending it. Adding a comment with `--dry-run` previews the POST without contacting the server.
+
+`comments TASK_ID` returns nonempty comments in the API's activity order, including comments attached to change entries. `--author` accepts a numeric user ID or `me`; `--since` accepts a positive day count such as `7` or `7d` and filters by creation time over the preceding 24-hour days. Multiple filters are combined. Text output shows each activity ID, author, creation timestamp, internal visibility when applicable, and Markdown text.
+
+The command scans and deduplicates activity pages before applying pagination to matching comments. `--offset` is a one-based page of matches, with the same `--limit` and filters on every request. JSON output contains `items`, `count`, `offset`, `pageSize`, `nextOffset`, and `total`. Continue with `--offset NEXT_OFFSET` until `nextOffset` is null. `total` is null while more matches exist and becomes the exact matching count when the end of history is reached. Listing reads one extra match to determine continuation and may need many activity reads for selective filters. Each invocation scans from the beginning; history changes between invocations can shift pages.
 
 ## Daily work briefing
 

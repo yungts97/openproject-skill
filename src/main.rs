@@ -1,11 +1,13 @@
 mod attachments;
 mod client;
+mod comments;
 
 use anyhow::{anyhow, bail, Context, Result};
 use attachments::{AttachmentCommands, AttachmentsArgs};
 use chrono::Local;
 use clap::{Args, Parser, Subcommand};
 use client::OpenProjectClient;
+use comments::{CommentArgs, CommentsArgs};
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use regex::Regex;
 use reqwest::blocking::Client as HttpClient;
@@ -83,6 +85,8 @@ enum Commands {
     Activities(ActivityArgs),
     /// Show one activity with its comment and change details.
     Activity(ActivityIdArgs),
+    /// List comments, optionally filtered by author and creation time.
+    Comments(CommentsArgs),
     /// List the time-entry activities available for a work package.
     TimeEntryActivities(TimeEntryActivitiesArgs),
     /// List relations for a work package.
@@ -105,12 +109,8 @@ enum Commands {
     Update(UpdateArgs),
     /// Permanently delete a work package and its associated time entries.
     Delete(DeleteArgs),
-    /// Add an activity comment.
-    Comment {
-        task_id: u64,
-        #[arg(long)]
-        message: String,
-    },
+    /// Add a comment or edit an existing activity's comment.
+    Comment(CommentArgs),
     /// Log time against a work package.
     LogTime(LogTimeArgs),
     /// Build a safe clickable link for a commit in the current Git repository.
@@ -2475,6 +2475,7 @@ fn run(cli: &Cli) -> Result<()> {
         }
         Commands::Delete(args) => emit(delete_work_package(&client, cli, args)?, cli.json),
         Commands::Activities(args) => emit(activity_page(&client, args)?, cli.json),
+        Commands::Comments(args) => comments::emit_list(comments::list(&client, args)?, cli.json),
         Commands::Activity(args) => emit(
             client.get(&format!("/activities/{}", args.activity_id))?,
             cli.json,
@@ -2809,16 +2810,7 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.json,
             );
         }
-        Commands::Comment { task_id, message } => emit(
-            write(
-                &client,
-                cli,
-                reqwest::Method::POST,
-                &format!("/work_packages/{task_id}/activities"),
-                json!({"comment":{"format":"markdown","raw":message}}),
-            )?,
-            cli.json,
-        ),
+        Commands::Comment(args) => emit(comments::execute(&client, cli, args)?, cli.json),
         Commands::LogTime(args) => {
             chrono::NaiveDate::parse_from_str(&args.date, "%Y-%m-%d")
                 .context("date must be YYYY-MM-DD")?;
