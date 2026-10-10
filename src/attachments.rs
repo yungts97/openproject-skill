@@ -80,6 +80,16 @@ pub(crate) fn upload(
         args.content_type.as_deref(),
     )?;
     let path = format!("/work_packages/{}/attachments", args.task_id);
+    upload_to(client, local, &path, args.description.as_deref(), dry_run)
+}
+
+pub(crate) fn upload_to(
+    client: &OpenProjectClient,
+    local: UploadFile,
+    path: &str,
+    description: Option<&str>,
+    dry_run: bool,
+) -> Result<Value> {
     if dry_run {
         return Ok(json!({
             "dryRun": true,
@@ -91,12 +101,12 @@ pub(crate) fn upload(
                 "fileSize": local.size,
                 "contentType": local.content_type,
             },
-            "description": args.description,
+            "description": description,
         }));
     }
 
     let mut metadata = json!({"fileName": local.name});
-    if let Some(description) = &args.description {
+    if let Some(description) = description {
         metadata["description"] = json!({"format":"plain","raw":description});
     }
     let metadata_part = Part::text(metadata.to_string())
@@ -110,7 +120,7 @@ pub(crate) fn upload(
     let form = Form::new()
         .part("metadata", metadata_part)
         .part("file", file_part);
-    client.post_multipart(&path, form)
+    client.post_multipart(path, form)
 }
 
 pub(crate) fn download(
@@ -190,14 +200,18 @@ pub(crate) fn delete(
     Ok(json!({"deleted":true,"attachmentId":args.attachment_id}))
 }
 
-struct UploadFile {
+pub(crate) struct UploadFile {
     path: PathBuf,
     name: String,
     size: u64,
     content_type: String,
 }
 
-fn upload_file(path: &Path, name: Option<&str>, content_type: Option<&str>) -> Result<UploadFile> {
+pub(crate) fn upload_file(
+    path: &Path,
+    name: Option<&str>,
+    content_type: Option<&str>,
+) -> Result<UploadFile> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("cannot inspect attachment file {}", path.display()))?;
     if !metadata.is_file() {

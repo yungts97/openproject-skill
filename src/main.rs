@@ -109,7 +109,7 @@ enum Commands {
     Update(UpdateArgs),
     /// Permanently delete a work package and its associated time entries.
     Delete(DeleteArgs),
-    /// Add a comment or edit an existing activity's comment.
+    /// Add, quote, or edit comments, attach files, and manage emoji reactions.
     Comment(CommentArgs),
     /// Log time against a work package.
     LogTime(LogTimeArgs),
@@ -2810,7 +2810,9 @@ fn run(cli: &Cli) -> Result<()> {
                 cli.json,
             );
         }
-        Commands::Comment(args) => emit(comments::execute(&client, cli, args)?, cli.json),
+        Commands::Comment(args) => {
+            comments::emit_result(comments::execute(&client, cli, args)?, cli.json)
+        }
         Commands::LogTime(args) => {
             chrono::NaiveDate::parse_from_str(&args.date, "%Y-%m-%d")
                 .context("date must be YYYY-MM-DD")?;

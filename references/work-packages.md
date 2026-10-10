@@ -61,6 +61,10 @@ openproject comment 123 --message "Implemented the API change." --dry-run --json
 openproject comment 123 --message-file ./update.md --dry-run --json
 openproject comment 123 --message-file - --dry-run --json < ./update.md
 openproject comment edit 456 --message "Corrected implementation details." --dry-run --json
+openproject comment 123 --quote 456 --message "Agreed; the follow-up is ready." --dry-run --json
+openproject comment attach 456 ./screenshot.png --description "Reproduction evidence" --dry-run --json
+openproject comment react 456 --emoji '👍' --dry-run --json
+openproject comment reactions 456 --json
 ```
 
 Comment listing scans and deduplicates activity pages so filtering does not lose matches. Pagination applies to matching comments: use the returned `nextOffset` with the same `--limit` and filters until it is null. `total` is null when more matches exist; it is exact only after the end of history is reached. A filtered empty page at the end is a complete result, but a read failure or broken pagination must not be treated as proof that no comments exist. History changes between invocations can shift pages.
@@ -68,6 +72,14 @@ Comment listing scans and deduplicates activity pages so filtering does not lose
 Adding and editing each require exactly one of `--message` or `--message-file`. File/stdin input must be UTF-8; `--message-file -` requires piped or redirected stdin. Preserve user-provided Markdown and whitespace; empty or whitespace-only input is refused.
 
 Editing is an external write that requires an explicit request to replace the text of that exact comment. Use the **activity ID**, not its work-package ID. The CLI reads the activity first, requires a nonempty comment and an update link, then PATCHes only the text. It preserves internal visibility and change details. Edit dry runs perform the read but never PATCH; add dry runs never POST. After a requested edit, verify with `activity ACTIVITY_ID --json`. As with new comments, do not blindly retry an edit after an uncertain write outcome; inspect the current text first.
+
+Use `comment TASK_ID --quote ACTIVITY_ID` with a message or message file to post a new comment containing a linked source reference, Markdown blockquote, and reply. The source must belong to the same work package and have nonempty comment text. This copies the source text without creating a threaded reply or automatically mentioning its author. Internal source comments always produce internal replies; do not strip internal visibility or retry as public if the server denies permission. Quote dry runs read the source but never POST. Verify the newly created activity and its visibility after a requested quote.
+
+Use `comment attach ACTIVITY_ID FILE` for an explicitly requested upload to that exact comment. A local regular file and an existing nonempty comment with an `addAttachment` link are required. The basename and detected MIME type are defaults; optional `--name`, `--description`, and `--content-type` customize the metadata. Dry runs validate the file, read the comment, and preview the upload without sending file contents. Upload permissions and internal-comment attachment visibility are enforced by the server. Verify the returned attachment via `attachment show ATTACHMENT_ID --json`, checking its container, and inspect the target activity. Posting a comment and attaching a file are separate writes; report each result separately when both were requested.
+
+Use `comment react ACTIVITY_ID --emoji REACTION` only for an explicitly requested reaction on that exact comment. It toggles the current user's reaction: repeating the same emoji removes it. Accept an API identifier or its corresponding emoji: `thumbs_up` (👍), `thumbs_down` (👎), `grinning_face_with_smiling_eyes` (😄), `confused_face` (😕), `heart` (❤️ or ❤), `party_popper` (🎉), `rocket` (🚀), or `eyes` (👀). The CLI reads the activity and requires nonempty comment text before PATCHing only the reaction identifier. A dry run reads the comment and previews the toggle without writing. Server permissions govern reactions on public and internal comments; never change visibility to bypass a denial. Reaction support requires a server with the activity emoji-reaction API.
+
+`comment reactions ACTIVITY_ID --json` returns the complete reaction collection, with counts and `reactingUsers` links. Verify a requested toggle by checking whether the current user's link is present for the requested reaction. A toggle is a separate write from posting, editing, quoting, or attaching files. After an uncertain write outcome, inspect the current user's membership before retrying: repeating a successful toggle would undo it. The CLI does not automatically retry reaction PATCH requests.
 
 ## Relations
 
@@ -80,7 +92,7 @@ openproject relation delete 789 --dry-run --json
 
 ## Attachments
 
-`attachments ID` lists attachments; `attachment show ATTACHMENT_ID` returns metadata. Upload a local regular file with `attachment upload`; basename and detected MIME type are automatic, with no `--name` or `--content-type` overrides. Deletion is permanent and requires an explicit request.
+`attachments ID` lists attachments; `attachment show ATTACHMENT_ID` returns metadata. Upload a local regular file with `attachment upload`; basename and detected MIME type are automatic, with optional `--name` and `--content-type` overrides. Use `comment attach` to target an existing comment. Deletion is permanent and requires an explicit request.
 
 ```bash
 openproject attachment upload 123 ./build.log --description "Build evidence" --dry-run --json

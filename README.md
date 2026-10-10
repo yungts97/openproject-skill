@@ -228,8 +228,11 @@ Global options may be supplied before or after a subcommand.
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
 | `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
 | `delete TASK_ID [--cascade]` | Permanently delete a work package and associated time entries; requires `--cascade` when the API reports children and supports `--dry-run` |
-| `comment TASK_ID (--message TEXT \| --message-file PATH)` | Add a Markdown comment; use `--message-file -` for piped or redirected stdin |
+| `comment TASK_ID (--message TEXT \| --message-file PATH) [--quote ACTIVITY_ID]` | Add a Markdown comment, optionally quoting a comment from the same work package; use `--message-file -` for stdin |
 | `comment edit ACTIVITY_ID (--message TEXT \| --message-file PATH)` | Replace an existing comment's text while preserving its visibility and activity details |
+| `comment attach ACTIVITY_ID FILE [--name NAME] [--description TEXT] [--content-type MIME]` | Upload a file to an existing comment; defaults to the local basename and detected MIME type |
+| `comment react ACTIVITY_ID --emoji REACTION` | Toggle your emoji reaction on a comment; accepts an emoji or API identifier and supports `--dry-run` |
+| `comment reactions ACTIVITY_ID` | List all reactions on a comment, including counts and reacting users |
 | `log-time TASK_ID --hours DURATION [OPTIONS]` | Log time with an optional date, comment, and activity name or ID |
 | `commit-link COMMIT [--remote NAME] [--format html\|url\|json]` | Build a safe link for a GitHub, GitLab, Gitea, or Bitbucket commit |
 | `upgrade [VERSION]` | Upgrade to the latest release, or to a specific version without the leading `v` |
@@ -271,6 +274,10 @@ openproject comment 123 --message "Implemented the API change."
 openproject comment 123 --message-file ./update.md --dry-run --json
 openproject comment 123 --message-file - --dry-run --json < ./update.md
 openproject comment edit 456 --message "Corrected implementation details." --dry-run --json
+openproject comment 123 --quote 456 --message "Agreed; the follow-up is ready." --dry-run --json
+openproject comment attach 456 ./screenshot.png --description "Reproduction evidence" --dry-run --json
+openproject comment react 456 --emoji '👍' --dry-run --json
+openproject comment reactions 456 --json
 openproject log-time 123 --hours 1.5 --date 2026-09-03 --comment "Implementation" --activity Development
 openproject commit-link HEAD --format url
 openproject upgrade --dry-run --json
@@ -283,6 +290,14 @@ openproject uninstall --purge --dry-run --json
 `comment TASK_ID --message TEXT` remains supported. Both adding and editing accept exactly one of `--message` or `--message-file`; files and stdin must contain UTF-8 text. Markdown, line breaks, and surrounding whitespace are preserved, but empty or whitespace-only input is rejected. `--message-file -` requires piped or redirected stdin and never opens an interactive prompt.
 
 `comment edit ACTIVITY_ID` uses an activity ID from `comments`, `activities`, or `activity`, rather than a work-package ID. It reads the activity first and requires an existing nonempty comment and the API's update link. The server enforces edit permissions. Only the comment text is patched; visibility, change details, and work-package fields are preserved. A dry run performs that read and previews the PATCH without sending it. Adding a comment with `--dry-run` previews the POST without contacting the server.
+
+Add `--quote ACTIVITY_ID` when posting a new comment to include a source link and a Markdown blockquote before your reply. The source must contain nonempty comment text and belong to the same work package. This also works with file/stdin input for the reply. Internal source comments produce internal replies automatically; the server must grant permission to add internal comments. A quote dry run reads the source and previews the complete new comment without posting it. Quoting copies the text; it does not create a threaded reply or notify the source author through an automatic mention.
+
+`comment attach ACTIVITY_ID FILE` uploads a local regular file to that comment using the API's multipart metadata/file format. It reads the activity first and requires nonempty comment text and an `addAttachment` link. `--name`, `--description`, and `--content-type` behave like work-package attachment uploads. A dry run validates the local file, reads the activity, and previews the upload without sending file contents. The server enforces permissions and handles internal-comment attachment visibility. Attaching a file is a separate operation from posting a comment; an existing comment is required.
+
+`comment react ACTIVITY_ID --emoji REACTION` toggles the current user's reaction on an existing nonempty comment. Use its activity ID from `comments`, `activities`, or `activity`. Accepted values are `thumbs_up` (👍), `thumbs_down` (👎), `grinning_face_with_smiling_eyes` (😄), `confused_face` (😕), `heart` (❤️ or ❤), `party_popper` (🎉), `rocket` (🚀), and `eyes` (👀). Both identifiers and emoji characters are accepted. Repeating the same reaction removes it. A dry run reads the comment and previews the PATCH without changing reactions. The server enforces comment permissions, including internal-comment permissions; comment text and visibility are preserved. The CLI never retries reaction writes automatically because a second successful toggle would undo the first. These operations use the [OpenProject activity emoji-reaction API](https://www.openproject.org/docs/api/endpoints/activities/); older servers may not support it.
+
+`comment reactions ACTIVITY_ID` reads the comment and its complete reaction collection. Text output shows each emoji, identifier, count, and reacting users, or `No emoji reactions.` for an empty collection. Both reaction commands return the complete API collection with `--json`, preserving reaction IDs and user links. After an uncertain toggle outcome, inspect `comment reactions ACTIVITY_ID --json` and the current user's membership in `reactingUsers` before deciding whether to repeat the write.
 
 `comments TASK_ID` returns nonempty comments in the API's activity order, including comments attached to change entries. `--author` accepts a numeric user ID or `me`; `--since` accepts a positive day count such as `7` or `7d` and filters by creation time over the preceding 24-hour days. Multiple filters are combined. Text output shows each activity ID, author, creation timestamp, internal visibility when applicable, and Markdown text.
 
