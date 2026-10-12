@@ -226,7 +226,7 @@ Global options may be supplied before or after a subcommand.
 | `attachment download ATTACHMENT_ID [OPTIONS]` | Download to `--output` or the server filename without overwriting by default |
 | `attachment delete ATTACHMENT_ID` | Permanently delete an attachment; supports the global `--dry-run` preview |
 | `create --subject TEXT [OPTIONS]` | Create a work package; supports project, description, type, assignee, priority, responsible user, parent, version, dates, estimate, and custom fields |
-| `update TASK_ID [OPTIONS]` | Update the create fields plus status and percent complete; deliberate `--clear-*` flags remove nullable values |
+| `update TASK_ID [OPTIONS]` | Update the create fields plus status, percent complete, and story points; deliberate `--clear-*` flags remove nullable values |
 | `delete TASK_ID [--cascade]` | Permanently delete a work package and associated time entries; requires `--cascade` when the API reports children and supports `--dry-run` |
 | `comment TASK_ID (--message TEXT \| --message-file PATH) [--quote ACTIVITY_ID]` | Add a Markdown comment, optionally quoting a comment from the same work package; use `--message-file -` for stdin |
 | `comment edit ACTIVITY_ID (--message TEXT \| --message-file PATH)` | Replace an existing comment's text while preserving its visibility and activity details |
@@ -241,6 +241,8 @@ Global options may be supplied before or after a subcommand.
 Run `openproject COMMAND --help` for the full option list.
 
 Dates use `YYYY-MM-DD`. Durations accept decimal hours that resolve to whole minutes, such as `1.5`, or ISO-8601 durations such as `PT1H30M`. User fields accept a numeric user ID or `me`. Statuses, priorities, types, versions, and projects are matched exactly after case and punctuation normalization; numeric IDs avoid ambiguity.
+
+Use `update TASK_ID --story-points N` to set a non-negative integer estimate, including zero, or `--clear-story-points` to send `storyPoints: null`. These options cannot be combined. Story points use the native API field, separately from `--estimate` (estimated time) and custom fields. The project must have Backlogs enabled and the work-package type must support Backlogs; the server enforces availability and permissions. Verify the resulting value with `task TASK_ID --full --json`. See the [OpenProject work-package API](https://www.openproject.org/docs/api/endpoints/work-packages/).
 
 Use repeated `--custom-field customFieldN=JSON` arguments for scalar custom fields. If the value is not valid JSON, it is treated as a string. Use `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for linked custom fields. The numeric property name and value type come from the OpenProject work package schema; the CLI deliberately does not guess them.
 
@@ -268,6 +270,8 @@ openproject attachment download 901 --output ./build.log --json
 openproject attachment delete 901 --dry-run --json
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --version "Release 2" --custom-field customField1=Acme --dry-run --json
 openproject update 123 --status "In progress" --percent 40 --responsible me --clear-due-date --dry-run --json
+openproject update 123 --story-points 8 --dry-run --json
+openproject update 123 --clear-story-points --dry-run --json
 openproject delete 123 --dry-run --json
 openproject delete 123 --cascade --dry-run --json
 openproject comment 123 --message "Implemented the API change."
@@ -330,7 +334,7 @@ All commands except `auth login` remain non-interactive, making them suitable fo
 - Collection commands return one page by default. Use `--limit` and `--offset`; task-list output includes `next`, `total`, and page metadata.
 - `tasks` sends all filters and sorting to OpenProject instead of downloading and filtering work packages locally. Repeating `--status`, `--type`, or `--priority` creates an OR list within that field; different fields are combined with AND.
 - `--updated-since` accepts a positive day count such as `7` or `7d`. `--sort` accepts a documented field with optional `asc` or `desc` and may be repeated for secondary sorting.
-- `--clear-description`, `--clear-assignee`, `--clear-responsible`, `--clear-parent`, `--clear-version`, `--clear-start-date`, `--clear-due-date`, `--clear-estimate`, and the custom-field clear options intentionally send a null value. A clear option cannot be combined with its corresponding value option.
+- `--clear-description`, `--clear-assignee`, `--clear-responsible`, `--clear-parent`, `--clear-version`, `--clear-start-date`, `--clear-due-date`, `--clear-estimate`, `--clear-story-points`, and the custom-field clear options intentionally send a null value. A clear option cannot be combined with its corresponding value option.
 - `project --bind` is an explicit local write to `.openproject.json`; agents must still obtain the repository-binding approval described in the Agent Skill. Its `--dry-run` output previews the target file and resolved ID without writing.
 - Attachment uploads use the local basename and detected MIME type unless `--name` or `--content-type` overrides them. Downloads use the server filename in the current directory unless `--output` supplies an exact path, refuse existing files unless `--force` is set, and never follow symbolic-link destinations.
 - Attachment downloads are streamed to a temporary file and moved into place only after completion and any available size check. Credentials are sent only to the configured OpenProject origin, not to cross-origin file-storage URLs or redirects.

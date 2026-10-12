@@ -31,6 +31,7 @@ The check reflects API visibility at read time. Hidden children and hierarchy ch
 
 - Resolve project, user, type, status, priority, and version names exactly or use IDs. Relationship values in API payloads use `_links` with `href`.
 - Clear mutable values deliberately with `update --clear-*`; never combine a value with its corresponding clear option.
+- Set native story points with `update ID --story-points N` (a non-negative integer, including zero), or remove the estimate with `--clear-story-points`. This writes `storyPoints`, separately from estimated time and custom fields. Backlogs must be enabled in the project and supported by the work-package type; the server enforces availability and permissions. Verify with `task ID --full --json`, since compact summaries omit story points.
 - Custom-field keys/types must come from a trusted schema, API response, user input, or repository guidance. Use `--custom-field customFieldN=JSON` for scalars and `--custom-field-link customFieldN=/api/v3/RESOURCE/ID` for links; never guess the numeric key or type.
 - `tasks` supports repeated status, type, priority, and sort flags. Values within a filter are alternatives; different filters are conjunctive. `--updated-since` takes a positive day count (`7` or `7d`).
 
@@ -39,6 +40,8 @@ Payload-review examples:
 ```bash
 openproject create --project 13 --subject "Fix approval flow" --type Task --assignee me --priority High --dry-run --json
 openproject update 123 --percent 40 --responsible me --clear-due-date --dry-run --json
+openproject update 123 --story-points 8 --dry-run --json
+openproject update 123 --clear-story-points --dry-run --json
 ```
 
 ## Time and activity

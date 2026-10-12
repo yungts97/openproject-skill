@@ -333,6 +333,9 @@ struct UpdateArgs {
     version: Option<String>,
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     percent: Option<u8>,
+    /// Set story points to a non-negative integer (requires Backlogs support).
+    #[arg(long, conflicts_with = "clear_story_points")]
+    story_points: Option<u32>,
     #[arg(long)]
     start_date: Option<String>,
     #[arg(long)]
@@ -369,6 +372,9 @@ struct UpdateArgs {
     /// Clear the estimated time.
     #[arg(long)]
     clear_estimate: bool,
+    /// Clear the story point estimate.
+    #[arg(long)]
+    clear_story_points: bool,
     /// Clear a scalar customFieldN value. Repeat for multiple fields.
     #[arg(long = "clear-custom-field", value_name = "CUSTOM_FIELD")]
     clear_custom_fields: Vec<String>,
@@ -2683,6 +2689,7 @@ fn run(cli: &Cli) -> Result<()> {
                 && args.parent.is_none()
                 && version.is_none()
                 && args.percent.is_none()
+                && args.story_points.is_none()
                 && args.start_date.is_none()
                 && args.due_date.is_none()
                 && args.estimate.is_none()
@@ -2696,6 +2703,7 @@ fn run(cli: &Cli) -> Result<()> {
                 && !args.clear_start_date
                 && !args.clear_due_date
                 && !args.clear_estimate
+                && !args.clear_story_points
             {
                 bail!("no update fields were supplied");
             }
@@ -2780,6 +2788,12 @@ fn run(cli: &Cli) -> Result<()> {
             }
             if let Some(percent) = args.percent {
                 payload.insert("percentageDone".into(), json!(percent));
+            }
+            if let Some(story_points) = args.story_points {
+                payload.insert("storyPoints".into(), json!(story_points));
+            }
+            if args.clear_story_points {
+                payload.insert("storyPoints".into(), Value::Null);
             }
             if let Some(start_date) = &args.start_date {
                 payload.insert("startDate".into(), json!(start_date));
@@ -3355,6 +3369,34 @@ mod tests {
     }
 
     #[test]
+    fn update_story_points_validate_values_and_conflicting_clear() {
+        for value in ["0", "8"] {
+            let cli = Cli::try_parse_from(["openproject", "update", "12", "--story-points", value])
+                .unwrap();
+            let Commands::Update(args) = cli.command else {
+                panic!("expected update command");
+            };
+            assert_eq!(args.story_points, Some(value.parse().unwrap()));
+        }
+        for value in ["-1", "1.5", "abc", "4294967296"] {
+            assert!(
+                Cli::try_parse_from(["openproject", "update", "12", "--story-points", value])
+                    .is_err()
+            );
+        }
+        let error = Cli::try_parse_from([
+            "openproject",
+            "update",
+            "12",
+            "--story-points",
+            "8",
+            "--clear-story-points",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ClapErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn update_clear_options_are_explicit() {
         let cli = Cli::try_parse_from([
             "openproject",
@@ -3362,6 +3404,7 @@ mod tests {
             "12",
             "--clear-description",
             "--clear-assignee",
+            "--clear-story-points",
         ])
         .unwrap();
         let Commands::Update(args) = cli.command else {
@@ -3369,6 +3412,8 @@ mod tests {
         };
         assert!(args.clear_description);
         assert!(args.clear_assignee);
+        assert!(args.clear_story_points);
+        assert!(args.story_points.is_none());
         assert!(args.description.is_none());
         assert!(args.assignee.is_none());
     }
