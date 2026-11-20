@@ -1,3 +1,4 @@
+#Requires -Version 5.1
 <#
 .SYNOPSIS
 Installs or upgrades the OpenProject CLI and Agent Skill.
@@ -12,6 +13,7 @@ Installation directory. Defaults to OPENPROJECT_INSTALL_DIR when set, then the u
 Agent Skills directory. Defaults to OPENPROJECT_SKILL_DIR when set, then ~/.agents/skills.
 
 .NOTES
+Supports Windows PowerShell 5.1 and PowerShell 7 or later on Windows.
 Set OPENPROJECT_NO_MODIFY_PATH=1 to leave the user PATH unchanged.
 Set OPENPROJECT_NO_AUTH_PROMPT=1 to skip interactive authentication setup.
 
@@ -188,11 +190,17 @@ if (-not $Version) {
   throw "The release version cannot be empty."
 }
 
-$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+# These Windows variables also work in Windows PowerShell's .NET Framework.
+# Prefer the native OS architecture when running under WOW64/emulation.
+$Architecture = if ($env:PROCESSOR_ARCHITEW6432) {
+  $env:PROCESSOR_ARCHITEW6432
+} else {
+  $env:PROCESSOR_ARCHITECTURE
+}
 $Target = switch ($Architecture) {
-  "X64" { "x86_64-pc-windows-msvc" }
+  "AMD64" { "x86_64-pc-windows-msvc" }
   "Arm64" { "aarch64-pc-windows-msvc" }
-  default { throw "Processor architecture '$Architecture' is not supported. Supported architectures: X64 and Arm64." }
+  default { throw "Processor architecture '$Architecture' is not supported. Supported architectures: AMD64 (x64) and ARM64." }
 }
 
 $Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)
@@ -205,6 +213,7 @@ $Action = if (Test-Path -LiteralPath $Executable) { "Upgraded" } else { "Install
 $CliCurrent = $false
 $Temporary = $null
 $Staged = $null
+$PreviousSecurityProtocol = $null
 
 if (-not $env:OPENPROJECT_SKILL_DIR -and -not $SkillDestinationSupplied) {
   $ClaudeRoot = Join-Path ([Environment]::GetFolderPath("UserProfile")) ".claude"
@@ -229,6 +238,11 @@ Write-Host ""
 
 try {
   Write-Step 1 "Checking system requirements"
+  if ($PSVersionTable.PSVersion.Major -lt 6) {
+    # Older .NET Framework defaults may omit TLS 1.2, which GitHub requires.
+    $PreviousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    [Net.ServicePointManager]::SecurityProtocol = $PreviousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  }
   if ($env:OPENPROJECT_GITLAB_PROJECT) {
     if ($Version -eq "latest") {
       throw "A specific release version is required with OPENPROJECT_GITLAB_PROJECT."
@@ -240,8 +254,13 @@ try {
 
   if ($Version -eq "latest" -and -not $env:OPENPROJECT_GITLAB_PROJECT) {
     try {
-      $LatestRelease = Invoke-WebRequest -Method Head "https://github.com/$Repository/releases/latest"
-      $Version = $LatestRelease.BaseResponse.ResponseUri.Segments[-1].Trim("/").TrimStart("v")
+      $LatestRelease = Invoke-WebRequest -UseBasicParsing -Method Head "https://github.com/$Repository/releases/latest"
+      $ReleaseUri = if ($LatestRelease.BaseResponse.PSObject.Properties["ResponseUri"]) {
+        $LatestRelease.BaseResponse.ResponseUri
+      } else {
+        $LatestRelease.BaseResponse.RequestMessage.RequestUri
+      }
+      $Version = $ReleaseUri.Segments[-1].Trim("/").TrimStart("v")
     } catch {
       throw "Could not check the latest release. Check your network connection. $($_.Exception.Message)"
     }
@@ -281,18 +300,18 @@ try {
     }
     if (-not $CliCurrent) {
       try {
-        Invoke-WebRequest "$Base/$Archive" -OutFile (Join-Path $Temporary $Archive)
+        Invoke-WebRequest -UseBasicParsing "$Base/$Archive" -OutFile (Join-Path $Temporary $Archive)
       } catch {
         throw "Could not download $Archive. Check the release version and your network connection. $($_.Exception.Message)"
       }
     }
     try {
-      Invoke-WebRequest "$Base/$SkillAsset" -OutFile (Join-Path $Temporary $SkillAsset)
+      Invoke-WebRequest -UseBasicParsing "$Base/$SkillAsset" -OutFile (Join-Path $Temporary $SkillAsset)
     } catch {
       throw "Could not download $SkillAsset. The release may be incomplete. $($_.Exception.Message)"
     }
     try {
-      Invoke-WebRequest "$Base/$Checksums" -OutFile (Join-Path $Temporary $Checksums)
+      Invoke-WebRequest -UseBasicParsing "$Base/$Checksums" -OutFile (Join-Path $Temporary $Checksums)
     } catch {
       throw "Could not download $Checksums. The release may be incomplete. $($_.Exception.Message)"
     }
@@ -321,7 +340,7 @@ try {
         }
       } else {
         try {
-          Invoke-WebRequest "$Base/$ReferenceAsset" -OutFile (Join-Path $Temporary $ReferenceAsset)
+          Invoke-WebRequest -UseBasicParsing "$Base/$ReferenceAsset" -OutFile (Join-Path $Temporary $ReferenceAsset)
         } catch {
           throw "Could not download $ReferenceAsset. The release may be incomplete. $($_.Exception.Message)"
         }
@@ -412,6 +431,9 @@ try {
 } catch {
   throw "OpenProject installation failed: $($_.Exception.Message)"
 } finally {
+  if ($null -ne $PreviousSecurityProtocol) {
+    [Net.ServicePointManager]::SecurityProtocol = $PreviousSecurityProtocol
+  }
   if ($Staged -and (Test-Path -LiteralPath $Staged)) {
     Remove-Item -LiteralPath $Staged -Force -ErrorAction SilentlyContinue
   }

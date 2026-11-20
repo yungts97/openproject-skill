@@ -16,11 +16,14 @@ jobs:
       - run: cargo clippy --all-targets
       - run: cargo test
 
-  powershell-syntax:
+  powershell-installer:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
-      - shell: pwsh
+      - shell: ${{ matrix.shell }}
         run: |
           $tokens = $null
           $errors = $null
@@ -33,3 +36,5 @@ jobs:
             $errors | ForEach-Object { Write-Error $_ }
             exit 1
           }
+      - shell: ${{ matrix.shell }}
+        run: ./scripts/test-install.ps1

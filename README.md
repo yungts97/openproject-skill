@@ -14,7 +14,7 @@ Install the OpenProject Agent Skill and CLI by following https://raw.githubuserc
 
 ## Manual installation
 
-Run one command for your platform. It downloads the installer, matching CLI artifact, and Agent Skill from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verifies every release file against `SHA256SUMS` before installing them.
+Run the commands for your platform. They download the installer, matching CLI artifact, and Agent Skill from [GitHub Releases](https://github.com/yungts97/openproject-skill/releases), then verify every release file against `SHA256SUMS` before installing them.
 
 On Linux or macOS:
 
@@ -22,11 +22,14 @@ On Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | sh
 ```
 
-On Windows PowerShell:
+On Windows PowerShell 5.1 (the built-in Windows version) or PowerShell 7+:
 
 ```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
 ```
+
+The first line enables TLS 1.2 for the initial download on older Windows .NET configurations. PowerShell 7 is not required. Both x64 and ARM64 Windows are supported, including installation from a 32-bit PowerShell session on a supported 64-bit system.
 
 The default CLI destination is `~/.local/bin` on Linux and macOS, or `%LOCALAPPDATA%\openproject\bin` on Windows. The complete skill (`SKILL.md` plus `references/`) is installed under `~/.agents/skills/openproject/`, which is shared by Codex, OpenCode, and Pi. When Claude Code is detected, the installer also installs it under `~/.claude/skills/openproject/`. Older releases with a self-contained `SKILL.md` remain supported. Set `OPENPROJECT_INSTALL_DIR` or `OPENPROJECT_SKILL_DIR` to override these destinations; on PowerShell, `-Destination` and `-SkillDestination` are also available.
 

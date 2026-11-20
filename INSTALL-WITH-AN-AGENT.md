@@ -10,12 +10,13 @@ These instructions are for the coding agent performing the installation. The Ope
    curl -fsSL https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.sh | OPENPROJECT_NO_AUTH_PROMPT=1 sh
    ```
 
-   For Windows PowerShell:
+   For Windows PowerShell 5.1 or PowerShell 7+:
 
    ```powershell
    $previousAuthPrompt = $env:OPENPROJECT_NO_AUTH_PROMPT
    try {
      $env:OPENPROJECT_NO_AUTH_PROMPT = "1"
+     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
      irm https://raw.githubusercontent.com/yungts97/openproject-skill/main/scripts/install.ps1 | iex
    } finally {
      $env:OPENPROJECT_NO_AUTH_PROMPT = $previousAuthPrompt
