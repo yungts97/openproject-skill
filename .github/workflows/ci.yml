@@ -21,10 +21,12 @@ jobs:
     strategy:
       matrix:
         shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
-      - shell: ${{ matrix.shell }}
-        run: |
+      - run: |
           $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
@@ -36,5 +38,4 @@ jobs:
             $errors | ForEach-Object { Write-Error $_ }
             exit 1
           }
-      - shell: ${{ matrix.shell }}
-        run: ./scripts/test-install.ps1
+      - run: ./scripts/test-install.ps1
